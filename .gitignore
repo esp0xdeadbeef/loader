@@ -1,0 +1,7 @@
+
+payloads/*
+!payloads/payloads_will_be_cached_here
+payload_holders/*
+!payload_holders/this_folder_should_contain_word_files
+.jython_cache/
+templates/loader.hta
