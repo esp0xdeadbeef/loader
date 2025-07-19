@@ -8,3 +8,4 @@ templates/loader.hta
 venv/*
 __pycache__/*
 creds.txt
+OLD/*
