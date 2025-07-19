@@ -2,3 +2,4 @@ flask
 pymetasploit3
 olefile
 oletools
+netifaces
