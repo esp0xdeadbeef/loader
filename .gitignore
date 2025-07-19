@@ -9,3 +9,4 @@ venv/*
 __pycache__/*
 creds.txt
 OLD/*
+PASSWORD_MsfRpcClient.txt

