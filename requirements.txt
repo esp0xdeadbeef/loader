@@ -3,3 +3,4 @@ pymetasploit3
 olefile
 oletools
 netifaces
+pycryptodome

