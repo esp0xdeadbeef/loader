@@ -43,8 +43,11 @@ LISTENER_CONFIGS = {
 
 msf_client = None
 
+with open('./creds.txt', 'r') as f:
+    pw = f.read().strip()
+print(pw)
 try:
-    msf_client = MsfRpcClient('Banaanmetjus1234!', username='python', port=55555)
+    msf_client = MsfRpcClient(pw, username='python', port=55555)
 except Exception as e:
     logger.error("COULD NOT CONNECT TO MsfRpcClient")
     logger.error("WILL CONTINUE WITHOUT LISTENER AUTOMATION!!!!")
