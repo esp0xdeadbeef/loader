@@ -4,3 +4,4 @@ olefile
 oletools
 netifaces
 pycryptodome
+fee

