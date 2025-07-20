@@ -10,3 +10,5 @@ __pycache__/*
 creds.txt
 OLD/*
 PASSWORD_MsfRpcClient.txt
+CREDS_WINRM_BUILDER.txt
+certs/*
