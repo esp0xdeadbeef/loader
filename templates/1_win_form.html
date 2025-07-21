@@ -22,8 +22,18 @@
         </select>
     </label>
     <label>
-        Stomp VBA code (locks it to Office 2016 x86):
-        <input type="checkbox" name="stomp_vba" id="stomp_vba">
+        Stomp VBA to version:
+        <select name="stomp_version" id="stomp_version">
+            <option value="" selected>Don't stomp</option>
+            <option value="2010x86">Office 2010 x86</option>
+            <option value="2010x64">Office 2010 x64</option>
+            <option value="2013x86">Office 2013 x86</option>
+            <option value="2013x64">Office 2013 x64</option>
+            <option value="2016x86">Office 2016 x86</option>
+            <option value="2016x64">Office 2016 x64</option>
+            <option value="2019x86">Office 2019 x86</option>
+            <option value="2019x64">Office 2019 x64</option>
+        </select>
     </label>
     <label>
         Use system proxy:

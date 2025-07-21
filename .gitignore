@@ -9,6 +9,6 @@ venv/*
 __pycache__/*
 creds.txt
 OLD/*
-PASSWORD_MsfRpcClient.txt
+PASSWORD_MSF_RPC_CLIENT.txt
 CREDS_WINRM_BUILDER.txt
 certs/*
