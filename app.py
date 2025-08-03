@@ -789,7 +789,7 @@ def word_form():
 
     ladapter = request.args.get('ladapter', '')
     lport = request.args.get('lport', 443)
-    uid = request.args.get('uid', os.popen("uuidgen | sed 's/-//g'").read())
+    uid = request.args.get('uid', os.popen("uuidgen | sed 's/-//g'").read()).strip()
     print(f"{ladapter=}")
     print(f"{lport=}")
     print(f"{uid=}")
@@ -1093,7 +1093,7 @@ def generate_word_revshell_aes(lhost, lport, proxy, id, stomp_version, template_
         proxy=proxy
     ).strip()
 
-    password = str(uuid.uuid4()).replace('-', '')
+    password = str(uuid.uuid4()).replace('-', '').strip()
     encoded_powershell_command = encode_ps(command_text)
 
     payloads = generate_encrypted_payloads(
